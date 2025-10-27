@@ -6,7 +6,7 @@ const logger = new Logger('CSV_GENERATOR');
 export function generateEbayDraftCsv(products: Product[], images: ProductImage[]): string {
   logger.info('Generating eBay draft CSV', { productCount: products.length });
 
-  // eBay template info rows - EXACT format required by eBay
+  // eBay template info rows - EXACT format from official eBay template
   const infoRows = [
     '#INFO,Version=0.0.2,Template= eBay-draft-listings-template_US,,,,,,,,',
     '#INFO Action and Category ID are required fields. 1) Set Action to Draft 2) Please find the category ID for your listings here: https://pages.ebay.com/sellerinformation/news/categorychanges.html,,,,,,,,,,',
@@ -14,7 +14,7 @@ export function generateEbayDraftCsv(products: Product[], images: ProductImage[]
     '#INFO,,,,,,,,,,'
   ];
 
-  // Header row - EXACT format required by eBay
+  // Header row - EXACT format from official eBay template
   const header = 'Action(SiteID=US|Country=US|Currency=USD|Version=1193|CC=UTF-8),Custom label (SKU),Category ID,Title,UPC,Price,Quantity,Item photo URL,Condition ID,Description,Format';
 
   // Data rows
@@ -29,33 +29,32 @@ export function generateEbayDraftCsv(products: Product[], images: ProductImage[]
     // Build HTML description
     const description = buildHtmlDescription(product);
 
-    // Match eBay template exactly
-    // Condition: Use "NEW" string (as shown in official template)
-    const conditionId = 'NEW';
+    // Category ID: Default to 175837 (Other Consumer Electronics)
+    // User can edit this in the app or update in eBay after upload
+    const categoryId = product.category_id || '175837';
 
-    // Category ID: Use provided or default to 11450 (Everything Else > Other)
-    // User can update category in eBay after upload
-    const categoryId = product.category_id || '11450';
+    // SKU: Use ASIN as SKU for tracking
+    const sku = product.asin || '';
 
-    // SKU: Leave empty if not set (eBay template shows empty SKU is valid)
-    const sku = product.sku || '';
-
-    // UPC: Leave empty if not set (eBay template shows empty UPC is valid)
+    // UPC: Leave empty (eBay template shows empty UPC is valid)
     const upc = product.upc || '';
 
-    return [
+    // Build row matching eBay template format exactly
+    const row = [
       'Draft',
-      sku,
+      sku ? escapeCsvField(sku) : '',
       categoryId,
       escapeCsvField(product.title.substring(0, 80)),
       upc,
       product.ebay_price?.toFixed(2) || '9.99',
       product.quantity.toString(),
-      imageUrls,
-      conditionId,
+      imageUrls, // Don't escape - URLs with pipes should not be quoted
+      'NEW',
       escapeCsvField(description),
       'FixedPrice'
-    ].join(',');
+    ];
+
+    return row.join(',');
   });
 
   const csv = [...infoRows, header, ...dataRows].join('\n');
@@ -72,12 +71,14 @@ export function generateEbayDraftCsv(products: Product[], images: ProductImage[]
 function buildHtmlDescription(product: Product): string {
   const parts: string[] = [];
 
-  // Simple, clean HTML description
-  parts.push(`<div>`);
+  // Build clean HTML description similar to eBay template format
+  parts.push('<p>');
   
   if (product.brand) {
-    parts.push(`<p><strong>Brand:</strong> ${escapeHtml(product.brand)}</p>`);
+    parts.push(`<strong>Brand:</strong> ${escapeHtml(product.brand)}<br>`);
   }
+
+  parts.push('</p>');
 
   // Add bullet points if available
   if (product.raw_amazon_data?.bullets && Array.isArray(product.raw_amazon_data.bullets)) {
@@ -94,14 +95,15 @@ function buildHtmlDescription(product: Product): string {
 
   // Add description if available
   if (product.description) {
-    parts.push(`<p>${escapeHtml(product.description.substring(0, 500))}</p>`);
+    const cleanedDesc = escapeHtml(product.description.substring(0, 500));
+    if (cleanedDesc) {
+      parts.push(`<p>${cleanedDesc}</p>`);
+    }
   }
 
-  // Add condition statement
+  // Add condition and shipping info
   parts.push('<p><strong>Condition:</strong> Brand New, Factory Sealed</p>');
-  parts.push('<p><strong>Shipping:</strong> Fast and Secure Shipping</p>');
-  
-  parts.push(`</div>`);
+  parts.push('<p><strong>Shipping:</strong> Fast and secure shipping</p>');
 
   return parts.join('');
 }

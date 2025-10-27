@@ -45,12 +45,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const duration = Date.now() - startTime;
     logger.info('CSV export complete', { productCount: products.length, duration });
 
-    const timestamp = new Date().toISOString().split('T')[0];
+    // Format: YYYY-MM-DD_[count]_drafts.csv
+    const currentDate = new Date().toISOString().split('T')[0];
+    const numberOfRows = products.length;
+    const filename = `${currentDate}_${numberOfRows}_drafts.csv`;
 
     return new NextResponse(csv, {
       headers: {
         'Content-Type': 'text/csv',
-        'Content-Disposition': `attachment; filename="eBay-draft-listing-${timestamp}.csv"`,
+        'Content-Disposition': `attachment; filename="${filename}"`,
       },
     });
 

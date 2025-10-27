@@ -295,6 +295,14 @@ async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct> {
     price = parseFloat(`${priceWhole}.${priceFraction || '00'}`);
   }
 
+  // Helper function to clean and normalize image URLs
+  const cleanImageUrl = (url: string): string => {
+    if (!url) return '';
+    // Remove Amazon's size modifiers to get full resolution
+    // Patterns: ._SL500_.jpg, ._AC_SX425_.jpg, etc.
+    return url.replace(/\._[A-Z0-9_]+_\./, '.').replace(/\._[A-Z0-9_]+\.jpg/, '.jpg');
+  };
+
   // Extract images - Gets ALL product images from Amazon (typically 5-7 images)
   const images: string[] = [];
   const imageSet = new Set<string>();
@@ -305,8 +313,8 @@ async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct> {
     try {
       const imageObj = JSON.parse(imageBlockData);
       Object.keys(imageObj).forEach(url => {
-        const cleanUrl = url.replace(/\._.*_\./, '.');
-        imageSet.add(cleanUrl);
+        const cleanUrl = cleanImageUrl(url);
+        if (cleanUrl) imageSet.add(cleanUrl);
       });
       logger.debug('Extracted from imageBlock', { asin, count: imageSet.size });
     } catch (e) {
@@ -318,8 +326,8 @@ async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct> {
   $('#altImages img').each((_, img) => {
     const src = $(img).attr('src');
     if (src && !src.includes('play-icon')) {
-      const cleanUrl = src.replace(/\._.*_\./, '.').replace(/\._.*\.jpg/, '.jpg');
-      imageSet.add(cleanUrl);
+      const cleanUrl = cleanImageUrl(src);
+      if (cleanUrl) imageSet.add(cleanUrl);
     }
   });
 
@@ -335,7 +343,8 @@ async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct> {
         hiResMatches.forEach(match => {
           const urlMatch = match.match(/"hiRes":"([^"]+)"/);
           if (urlMatch && urlMatch[1] !== 'null') {
-            imageSet.add(urlMatch[1]);
+            const cleanUrl = cleanImageUrl(urlMatch[1]);
+            if (cleanUrl) imageSet.add(cleanUrl);
           }
         });
       }
@@ -346,7 +355,8 @@ async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct> {
         largeMatches.forEach(match => {
           const urlMatch = match.match(/"large":"([^"]+)"/);
           if (urlMatch && urlMatch[1] !== 'null') {
-            imageSet.add(urlMatch[1]);
+            const cleanUrl = cleanImageUrl(urlMatch[1]);
+            if (cleanUrl) imageSet.add(cleanUrl);
           }
         });
       }
@@ -359,16 +369,13 @@ async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct> {
                      $('#imgBlkFront').attr('src') ||
                      $('img[data-old-hires]').attr('data-old-hires');
     if (mainImage) {
-      const cleanUrl = mainImage.replace(/\._.*_\./, '.');
-      imageSet.add(cleanUrl);
+      const cleanUrl = cleanImageUrl(mainImage);
+      if (cleanUrl) imageSet.add(cleanUrl);
     }
   }
 
-  // Convert Set to Array and get full-size URLs
-  images.push(...Array.from(imageSet).map(url => {
-    // Remove size constraints from URL to get full resolution
-    return url.replace(/\._.*?_\./, '.').replace(/\._.*\.jpg/, '.jpg');
-  }));
+  // Convert Set to Array (URLs are already cleaned and deduplicated)
+  images.push(...Array.from(imageSet));
 
   logger.info('Image extraction complete', { 
     asin, 

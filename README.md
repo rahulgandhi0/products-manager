@@ -8,7 +8,8 @@ A modern web application for automating Amazon-to-eBay product listings. Scan AS
 - **Auto Scraping** - Fetch product details and images from Amazon  
 - **Product Management** - View, edit, filter, and organize products
 - **Status Tracking** - Track products (INACTIVE → POSTED → SOLD)
-- **Expired Listings** - Automatically flag listings over 30 days old
+- **Aged Listings** - Automatically flag POSTED listings over 30 days old
+- **One-Click Renewal** - Reset listing timer with Renew button
 - **Bulk Operations** - Multi-select for status updates, export, or deletion
 - **eBay CSV Export** - Generate eBay-compliant draft CSV files
 
@@ -53,9 +54,10 @@ Open [http://localhost:3000](http://localhost:3000)
 
 1. **Add Products** - Enter ASIN or scan barcode on home page
 2. **Manage** - View and edit products at `/products`
-3. **Filter** - Use tabs to filter by status (ALL, INACTIVE, POSTED, EXPIRED, SOLD)
-4. **Export** - Select products and click "Export CSV"
-5. **Upload to eBay** - Go to eBay Seller Hub → Upload CSV file
+3. **Filter** - Use tabs to filter by status (ALL, INACTIVE, POSTED, AGED, SOLD)
+4. **Renew** - Click Renew button on aged listings to reset timer
+5. **Export** - Select products and click "Export CSV"
+6. **Upload to eBay** - Go to eBay Seller Hub → Upload CSV file
 
 ## Tech Stack
 

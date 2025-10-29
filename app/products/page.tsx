@@ -229,7 +229,8 @@ export default function AllProductsPage(): JSX.Element {
     setEditValues({});
   };
 
-  const isExpired = (product: Product): boolean => {
+  const isAged = (product: Product): boolean => {
+    // Only POSTED items that have been posted for 30+ days are considered aged
     if (product.status !== 'POSTED' || !product.posted_at) {
       return false;
     }
@@ -268,6 +269,26 @@ export default function AllProductsPage(): JSX.Element {
     }
   };
 
+  const renewListing = async (id: string): Promise<void> => {
+    try {
+      const response = await fetch('/api/products', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, updates: { posted_at: new Date().toISOString() } }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        toast.success('Listing renewed - timer reset');
+        fetchProducts();
+      }
+    } catch (error) {
+      console.error('[RENEW_LISTING_ERROR]', error);
+      toast.error('Failed to renew listing');
+    }
+  };
+
   return (
     <div className="min-h-screen flex flex-col">
       {/* Modern Header */}
@@ -300,7 +321,7 @@ export default function AllProductsPage(): JSX.Element {
         <div className="max-w-7xl mx-auto">
           {/* Status Filter Pills */}
           <div className="flex flex-wrap gap-2 mb-6">
-            {(['ALL', 'INACTIVE', 'POSTED', 'EXPIRED', 'SOLD'] as StatusFilter[]).map((status) => (
+            {(['ALL', 'INACTIVE', 'POSTED', 'AGED', 'SOLD'] as StatusFilter[]).map((status) => (
               <button
                 key={status}
                 onClick={() => {
@@ -309,15 +330,15 @@ export default function AllProductsPage(): JSX.Element {
                 }}
                 className={`px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200 ${
                   statusFilter === status
-                    ? status === 'EXPIRED'
+                    ? status === 'AGED'
                       ? 'bg-gradient-to-r from-orange-600 to-red-600 text-white shadow-lg scale-105'
                       : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg scale-105'
-                    : status === 'EXPIRED'
+                    : status === 'AGED'
                     ? 'bg-white text-orange-700 hover:bg-orange-50 border border-orange-200 hover:border-orange-300'
                     : 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-200 hover:border-gray-300'
                 }`}
               >
-                {status === 'EXPIRED' ? '⚠️ EXPIRED (30+ days)' : status}
+                {status === 'AGED' ? 'Aged' : status}
               </button>
             ))}
           </div>
@@ -421,13 +442,13 @@ export default function AllProductsPage(): JSX.Element {
                     </tr>
                   ) : (
                     products.map((product) => {
-                      const expired = isExpired(product);
+                      const aged = isAged(product);
                       const daysSincePosted = getDaysSincePosted(product);
                       return (
                         <tr 
                           key={product.id} 
                           className={`cursor-pointer transition-all duration-200 group ${
-                            expired 
+                            aged 
                               ? 'bg-orange-50/50 hover:bg-orange-100/50 border-l-4 border-orange-500' 
                               : 'hover:bg-gradient-to-r hover:from-blue-50/50 hover:to-indigo-50/50'
                           }`}
@@ -536,7 +557,7 @@ export default function AllProductsPage(): JSX.Element {
                                 updateStatus(product.id, e.target.value as any)
                               }
                               className={`px-3 py-2 rounded-lg text-xs font-bold border-0 cursor-pointer transition-all duration-200 uppercase tracking-wide ${
-                                expired
+                                aged
                                   ? 'bg-orange-100 text-orange-700 hover:bg-orange-200'
                                   : product.status === 'POSTED'
                                   ? 'bg-green-100 text-green-700 hover:bg-green-200'
@@ -551,9 +572,9 @@ export default function AllProductsPage(): JSX.Element {
                             </select>
                             {product.status === 'POSTED' && daysSincePosted !== null && (
                               <span className={`text-xs font-medium ${
-                                expired ? 'text-orange-600' : 'text-green-600'
+                                aged ? 'text-orange-600' : 'text-green-600'
                               }`}>
-                                {expired ? '⚠️ ' : ''}
+                                {aged ? '⚠️ ' : ''}
                                 {daysSincePosted} day{daysSincePosted !== 1 ? 's' : ''} ago
                               </span>
                             )}
@@ -577,6 +598,18 @@ export default function AllProductsPage(): JSX.Element {
                             </div>
                           ) : (
                             <div className="flex gap-2 items-center">
+                              {aged && (
+                                <button
+                                  onClick={() => renewListing(product.id)}
+                                  className="px-3 py-1.5 bg-orange-600 text-white rounded-lg text-xs font-medium hover:bg-orange-700 transition-colors flex items-center gap-1"
+                                  title="Renew listing - Reset timer"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                  </svg>
+                                  Renew
+                                </button>
+                              )}
                               <button
                                 onClick={() => startEditing(product)}
                                 className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"

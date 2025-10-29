@@ -57,5 +57,5 @@ export interface AmazonProduct {
   };
 }
 
-export type StatusFilter = 'ALL' | 'INACTIVE' | 'POSTED' | 'SOLD' | 'EXPIRED';
+export type StatusFilter = 'ALL' | 'INACTIVE' | 'POSTED' | 'SOLD' | 'AGED';
 

@@ -1,8 +1,8 @@
-# Posted Timestamp & Expired Products Feature
+# Posted Timestamp & Aged Listings Feature
 
 ## Overview
 
-This feature automatically tracks when products are moved to the "POSTED" status and identifies products that have been posted for more than 30 days as "EXPIRED".
+This feature automatically tracks when products are moved to the "POSTED" status and identifies products that have been posted for more than 30 days as "AGED". Aged listings can be renewed with a single click to reset the timer.
 
 ## How It Works
 
@@ -12,26 +12,29 @@ This feature automatically tracks when products are moved to the "POSTED" status
 - If a product is moved back to "INACTIVE" and then to "POSTED" again, `posted_at` is updated to the new timestamp
 - When status changes away from "POSTED", `posted_at` is cleared (set to NULL)
 
-### Expired Products Logic
-- Products are considered "EXPIRED" if:
-  - Status is "POSTED"
+### Aged Listings Logic
+- Products are considered "AGED" if:
+  - Status is currently "POSTED"
   - `posted_at` is set
   - `posted_at` is more than 30 days ago
+- Only items that are still in POSTED status appear in the Aged filter
 
 ## UI Features
 
 ### Filter Pills
-- New "EXPIRED (30+ days)" filter pill with orange/red styling
+- New "Aged" filter pill with orange/red styling
 - Located in the products page alongside ALL, INACTIVE, POSTED, and SOLD filters
+- Shows only items currently in POSTED status that are 30+ days old
 
 ### Visual Indicators
-- **Expired products** have:
+- **Aged listings** (POSTED items 30+ days old) have:
   - Orange background highlight in the table
   - Orange left border (4px)
   - Orange status dropdown background
   - Warning emoji (⚠️) next to days count
+  - **Renew button** to reset the timer
 
-- **Posted products** show:
+- **Recent posted products** show:
   - Green status dropdown
   - Days since posted below the status
   - Example: "5 days ago"
@@ -41,7 +44,14 @@ This feature automatically tracks when products are moved to the "POSTED" status
 - For POSTED products, displays days since posted
 - Color-coded:
   - Green for recent posts (< 30 days)
-  - Orange with warning for expired (≥ 30 days)
+  - Orange with warning for aged listings (≥ 30 days)
+
+### Renew Button
+- Appears in the Actions column for aged listings
+- Orange button with refresh icon
+- Clicking "Renew" resets the `posted_at` timestamp to current time
+- Timer starts fresh from 0 days
+- Listing moves out of "Aged" filter immediately
 
 ## Migration Instructions
 
@@ -75,11 +85,12 @@ WHERE status = 'POSTED' AND posted_at IS NULL;
 ## API Changes
 
 ### GET /api/products
-- Now supports `status=EXPIRED` filter parameter
-- Returns products that are POSTED and older than 30 days
+- Now supports `status=AGED` filter parameter
+- Returns only products that are currently POSTED and older than 30 days
 
 ### PATCH /api/products
 - Automatically sets `posted_at` via database trigger when status changes to "POSTED"
+- Supports manual `posted_at` updates for renewing listings
 - Logs status changes for tracking
 
 ### POST /api/products/bulk-update
@@ -95,25 +106,27 @@ export interface Product {
   posted_at?: string;  // NEW: ISO 8601 timestamp
 }
 
-export type StatusFilter = 'ALL' | 'INACTIVE' | 'POSTED' | 'SOLD' | 'EXPIRED'; // UPDATED
+export type StatusFilter = 'ALL' | 'INACTIVE' | 'POSTED' | 'SOLD' | 'AGED'; // UPDATED
 ```
 
 ## Benefits
 
 1. **Automatic Tracking**: No manual work required - the database trigger handles everything
 2. **Historical Accuracy**: If you move a product back to INACTIVE and then POSTED again, the timestamp resets
-3. **Visual Alerts**: Expired products are immediately visible with orange highlighting
-4. **Better Inventory Management**: Quickly identify stale listings that may need attention
-5. **Audit Trail**: Logs in console show when status changes occur
+3. **Visual Alerts**: Aged listings are immediately visible with orange highlighting
+4. **One-Click Renewal**: Reset the timer instantly with the Renew button
+5. **Better Inventory Management**: Quickly identify listings that may need attention or relisting
+6. **Only Active Listings**: Aged filter only shows items currently in POSTED status
+7. **Audit Trail**: Logs in console show when status changes occur
 
 ## Files Modified
 
 - `database/schema.sql` - Added `posted_at` column, index, and trigger
 - `database/migration_add_posted_at.sql` - NEW migration file for existing databases
-- `lib/types.ts` - Added `posted_at` field and `EXPIRED` status filter
-- `app/api/products/route.ts` - Added EXPIRED filter logic and logging
+- `lib/types.ts` - Added `posted_at` field and `AGED` status filter
+- `app/api/products/route.ts` - Added AGED filter logic and logging
 - `app/api/products/bulk-update/route.ts` - Added logging for status changes
-- `app/products/page.tsx` - Added EXPIRED filter UI, visual indicators, and days counter
+- `app/products/page.tsx` - Added AGED filter UI, visual indicators, days counter, and Renew button
 
 ## Testing
 
@@ -121,11 +134,13 @@ export type StatusFilter = 'ALL' | 'INACTIVE' | 'POSTED' | 'SOLD' | 'EXPIRED'; /
 2. Check that `posted_at` is automatically set in the database
 3. Change the product back to "INACTIVE" - `posted_at` should be cleared
 4. Change it to "POSTED" again - `posted_at` should be set to the new timestamp
-5. To test the EXPIRED filter, manually set `posted_at` to 31+ days ago in the database:
+5. To test the AGED filter, manually set `posted_at` to 31+ days ago in the database:
    ```sql
    UPDATE products 
    SET posted_at = NOW() - INTERVAL '31 days' 
-   WHERE id = 'your-product-id';
+   WHERE id = 'your-product-id' AND status = 'POSTED';
    ```
-6. View the product in the UI - it should show orange highlighting and appear in the EXPIRED filter
+6. View the product in the UI - it should show orange highlighting and appear in the AGED filter
+7. Click the "Renew" button - `posted_at` should reset to current time and item moves out of AGED filter
+8. Verify that only POSTED items appear in AGED filter (not INACTIVE or SOLD items)
 

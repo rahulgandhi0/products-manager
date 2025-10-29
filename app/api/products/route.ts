@@ -24,8 +24,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
-    if (status === 'EXPIRED') {
-      // Products that are POSTED and posted_at is more than 30 days ago
+    if (status === 'AGED') {
+      // Products that are currently POSTED and posted_at is more than 30 days ago
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
       query = query

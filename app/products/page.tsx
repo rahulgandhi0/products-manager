@@ -229,6 +229,25 @@ export default function AllProductsPage(): JSX.Element {
     setEditValues({});
   };
 
+  const isExpired = (product: Product): boolean => {
+    if (product.status !== 'POSTED' || !product.posted_at) {
+      return false;
+    }
+    const postedDate = new Date(product.posted_at);
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    return postedDate < thirtyDaysAgo;
+  };
+
+  const getDaysSincePosted = (product: Product): number | null => {
+    if (!product.posted_at) return null;
+    const postedDate = new Date(product.posted_at);
+    const now = new Date();
+    const diffMs = now.getTime() - postedDate.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    return diffDays;
+  };
+
   const updateStatus = async (id: string, status: 'POSTED' | 'SOLD' | 'INACTIVE'): Promise<void> => {
     try {
       const response = await fetch('/api/products', {
@@ -281,7 +300,7 @@ export default function AllProductsPage(): JSX.Element {
         <div className="max-w-7xl mx-auto">
           {/* Status Filter Pills */}
           <div className="flex flex-wrap gap-2 mb-6">
-            {(['ALL', 'INACTIVE', 'POSTED', 'SOLD'] as StatusFilter[]).map((status) => (
+            {(['ALL', 'INACTIVE', 'POSTED', 'EXPIRED', 'SOLD'] as StatusFilter[]).map((status) => (
               <button
                 key={status}
                 onClick={() => {
@@ -290,11 +309,15 @@ export default function AllProductsPage(): JSX.Element {
                 }}
                 className={`px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200 ${
                   statusFilter === status
-                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg scale-105'
+                    ? status === 'EXPIRED'
+                      ? 'bg-gradient-to-r from-orange-600 to-red-600 text-white shadow-lg scale-105'
+                      : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg scale-105'
+                    : status === 'EXPIRED'
+                    ? 'bg-white text-orange-700 hover:bg-orange-50 border border-orange-200 hover:border-orange-300'
                     : 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-200 hover:border-gray-300'
                 }`}
               >
-                {status}
+                {status === 'EXPIRED' ? '⚠️ EXPIRED (30+ days)' : status}
               </button>
             ))}
           </div>
@@ -397,12 +420,19 @@ export default function AllProductsPage(): JSX.Element {
                       </td>
                     </tr>
                   ) : (
-                    products.map((product) => (
-                      <tr 
-                        key={product.id} 
-                        className="hover:bg-gradient-to-r hover:from-blue-50/50 hover:to-indigo-50/50 cursor-pointer transition-all duration-200 group"
-                        onClick={() => toggleSelection(product.id)}
-                      >
+                    products.map((product) => {
+                      const expired = isExpired(product);
+                      const daysSincePosted = getDaysSincePosted(product);
+                      return (
+                        <tr 
+                          key={product.id} 
+                          className={`cursor-pointer transition-all duration-200 group ${
+                            expired 
+                              ? 'bg-orange-50/50 hover:bg-orange-100/50 border-l-4 border-orange-500' 
+                              : 'hover:bg-gradient-to-r hover:from-blue-50/50 hover:to-indigo-50/50'
+                          }`}
+                          onClick={() => toggleSelection(product.id)}
+                        >
                         <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
                           <input
                             type="checkbox"
@@ -499,23 +529,35 @@ export default function AllProductsPage(): JSX.Element {
                           )}
                         </td>
                         <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
-                          <select
-                            value={product.status}
-                            onChange={(e) =>
-                              updateStatus(product.id, e.target.value as any)
-                            }
-                            className={`px-3 py-2 rounded-lg text-xs font-bold border-0 cursor-pointer transition-all duration-200 uppercase tracking-wide ${
-                              product.status === 'POSTED'
-                                ? 'bg-green-100 text-green-700 hover:bg-green-200'
-                                : product.status === 'SOLD'
-                                ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
-                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                            }`}
-                          >
-                            <option value="INACTIVE">INACTIVE</option>
-                            <option value="POSTED">POSTED</option>
-                            <option value="SOLD">SOLD</option>
-                          </select>
+                          <div className="flex flex-col gap-1">
+                            <select
+                              value={product.status}
+                              onChange={(e) =>
+                                updateStatus(product.id, e.target.value as any)
+                              }
+                              className={`px-3 py-2 rounded-lg text-xs font-bold border-0 cursor-pointer transition-all duration-200 uppercase tracking-wide ${
+                                expired
+                                  ? 'bg-orange-100 text-orange-700 hover:bg-orange-200'
+                                  : product.status === 'POSTED'
+                                  ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                                  : product.status === 'SOLD'
+                                  ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                              }`}
+                            >
+                              <option value="INACTIVE">INACTIVE</option>
+                              <option value="POSTED">POSTED</option>
+                              <option value="SOLD">SOLD</option>
+                            </select>
+                            {product.status === 'POSTED' && daysSincePosted !== null && (
+                              <span className={`text-xs font-medium ${
+                                expired ? 'text-orange-600' : 'text-green-600'
+                              }`}>
+                                {expired ? '⚠️ ' : ''}
+                                {daysSincePosted} day{daysSincePosted !== 1 ? 's' : ''} ago
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
                           {editingId === product.id ? (
@@ -557,7 +599,8 @@ export default function AllProductsPage(): JSX.Element {
                           )}
                         </td>
                       </tr>
-                    ))
+                    );
+                    })
                   )}
                 </tbody>
               </table>

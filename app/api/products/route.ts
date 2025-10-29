@@ -24,7 +24,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
-    if (status !== 'ALL') {
+    if (status === 'EXPIRED') {
+      // Products that are POSTED and posted_at is more than 30 days ago
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      query = query
+        .eq('status', 'POSTED')
+        .not('posted_at', 'is', null)
+        .lt('posted_at', thirtyDaysAgo.toISOString());
+    } else if (status !== 'ALL') {
       query = query.eq('status', status);
     }
 
@@ -69,6 +77,7 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
 
     logger.info('Updating product', { id, updates });
 
+    // Note: posted_at is automatically set by database trigger when status changes to POSTED
     const { data, error } = await supabaseAdmin
       .from('products')
       .update(updates)
@@ -77,6 +86,12 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
       .single();
 
     if (error) throw error;
+
+    if (updates.status === 'POSTED') {
+      logger.info('Product marked as POSTED - posted_at will be set by trigger', { id });
+    } else if (updates.status && updates.status !== 'POSTED') {
+      logger.info('Product status changed away from POSTED - posted_at will be cleared by trigger', { id, newStatus: updates.status });
+    }
 
     return NextResponse.json({ success: true, data });
 

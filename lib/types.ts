@@ -23,6 +23,7 @@ export interface Product {
   created_at: string;
   updated_at: string;
   exported_at?: string;
+  posted_at?: string;
   thumbnail?: string; // First image URL (not in DB, joined from product_images)
 }
 
@@ -56,5 +57,5 @@ export interface AmazonProduct {
   };
 }
 
-export type StatusFilter = 'ALL' | 'INACTIVE' | 'POSTED' | 'SOLD';
+export type StatusFilter = 'ALL' | 'INACTIVE' | 'POSTED' | 'SOLD' | 'EXPIRED';
 

@@ -10,13 +10,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     logger.info('Bulk updating products', { ids, count: ids.length, updates });
 
-    // Update all products with the same values
+    // Note: posted_at is automatically set by database trigger when status changes to POSTED
     const { error } = await supabaseAdmin
       .from('products')
       .update(updates)
       .in('id', ids);
 
     if (error) throw error;
+
+    if (updates.status === 'POSTED') {
+      logger.info('Products marked as POSTED - posted_at will be set by trigger', { count: ids.length });
+    } else if (updates.status && updates.status !== 'POSTED') {
+      logger.info('Products status changed away from POSTED - posted_at will be cleared by trigger', { count: ids.length, newStatus: updates.status });
+    }
 
     return NextResponse.json({ 
       success: true, 

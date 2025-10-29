@@ -30,13 +30,15 @@ CREATE TABLE IF NOT EXISTS products (
   raw_amazon_data JSONB,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
-  exported_at TIMESTAMPTZ
+  exported_at TIMESTAMPTZ,
+  posted_at TIMESTAMPTZ
 );
 
 -- Indexes for products table
 CREATE INDEX IF NOT EXISTS idx_products_asin ON products(asin);
 CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
 CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_products_posted_at ON products(posted_at DESC);
 
 -- ============================================
 -- PRODUCT IMAGES TABLE
@@ -71,6 +73,29 @@ CREATE TRIGGER update_products_updated_at
 BEFORE UPDATE ON products
 FOR EACH ROW
 EXECUTE FUNCTION update_updated_at_column();
+
+-- Auto-update posted_at timestamp when status changes to POSTED
+CREATE OR REPLACE FUNCTION update_posted_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Set posted_at when status changes to POSTED
+  IF NEW.status = 'POSTED' AND (OLD.status IS NULL OR OLD.status != 'POSTED') THEN
+    NEW.posted_at = NOW();
+  END IF;
+  
+  -- Clear posted_at when status changes away from POSTED
+  IF NEW.status != 'POSTED' AND OLD.status = 'POSTED' THEN
+    NEW.posted_at = NULL;
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER update_products_posted_at
+BEFORE UPDATE ON products
+FOR EACH ROW
+EXECUTE FUNCTION update_posted_at_column();
 
 -- ============================================
 -- STORAGE BUCKET

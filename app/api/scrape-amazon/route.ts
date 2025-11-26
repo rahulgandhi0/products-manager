@@ -14,6 +14,10 @@ import {
   getStats,
   addRequestJitter,
   addCacheBuster,
+  simulateScrolling,
+  simulateMouseMovement,
+  addTypingDelay,
+  addImageLoadDelay,
 } from '@/lib/scraper-utils';
 
 const logger = new Logger('API_SCRAPE_AMAZON');
@@ -40,13 +44,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     );
   }
   
-  // Add human-like delay before processing
-  const delay = getHumanDelay();
-  logger.debug('Adding human delay', { delay });
+  // Add human-like delay before processing (page load timing)
+  const delay = getHumanDelay('page_load');
+  logger.debug('Adding human page load delay', { delay });
   await new Promise(resolve => setTimeout(resolve, delay));
   
-  // Add small jitter to break timing patterns
+  // Add variable jitter to break timing patterns
   await addRequestJitter();
+  
+  // Create a timeout promise that rejects after 25 seconds
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Request timeout after 25 seconds')), 25000);
+  });
+  
   try {
     const body = await req.json();
     
@@ -101,8 +111,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }, { status: 409 });
     }
 
-    // Scrape Amazon product page with human-like behavior
-    const amazonProduct = await scrapeAmazonProduct(asin);
+    // Scrape Amazon product page with human-like behavior (with timeout)
+    const amazonProduct = await Promise.race([
+      scrapeAmazonProduct(asin),
+      timeoutPromise
+    ]);
     
     // Record successful request
     recordRequest();
@@ -177,8 +190,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     
     logger.error('Failed to process product', error, { 
       statusCode,
+      message: error.message,
       stats: getStats(),
     });
+    
+    // Handle timeout errors
+    if (error.message?.includes('timeout') || error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+      return NextResponse.json(
+        { success: false, error: 'Amazon request timed out - Amazon may be blocking requests. Try again in a few minutes.' },
+        { status: 408 }
+      );
+    }
     
     // Handle specific error codes
     if (statusCode === 429 || statusCode === 503) {
@@ -196,7 +218,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
     
     return NextResponse.json(
-      { success: false, error: 'Failed to scrape Amazon product' },
+      { success: false, error: 'Failed to scrape Amazon product - Amazon may be blocking the request' },
       { status: 500 }
     );
   }
@@ -207,26 +229,36 @@ async function searchAmazonByIdentifier(
   identifierType: string
 ): Promise<string | null> {
   try {
+    // Simulate typing the search query
+    await addTypingDelay(identifier.length);
+    
+    // Brief pause before hitting "enter" (submit)
+    await simulateMouseMovement();
+    
     // Search Amazon using the identifier - ONE TRY ONLY
     let searchUrl = `https://www.amazon.com/s?k=${encodeURIComponent(identifier)}`;
     
     // Add cache busters and natural-looking parameters
     searchUrl = addCacheBuster(searchUrl);
     
-    logger.info('Searching Amazon with anti-detection', { identifier, identifierType });
+    logger.info('Searching Amazon with enhanced human-like behavior', { identifier, identifierType });
     
     // Get consistent headers for this session
     const headers = getConsistentHeaders();
     
     const response = await axios.get(searchUrl, {
       headers,
-      timeout: 10000,
+      timeout: 15000, // 15 seconds
       maxRedirects: 0,
       validateStatus: (status) => status === 200,
+      signal: AbortSignal.timeout(20000), // Hard timeout at 20 seconds
     });
     
-    // Add "reading" delay to simulate human behavior
-    await addReadingDelay();
+    // Simulate looking at search results (brief reading)
+    await addReadingDelay('brief');
+    
+    // Simulate scrolling through results
+    await simulateScrolling(2);
 
     const $ = cheerio.load(response.data);
     
@@ -235,9 +267,17 @@ async function searchAmazonByIdentifier(
     const firstResult = $('[data-asin]').first();
     let asin = firstResult.attr('data-asin');
     
+    // Simulate user looking at the first result (micro-pause)
+    await simulateMouseMovement();
+    
     // Make sure it's a valid 10-character ASIN, not empty or "0000000000"
     if (asin && asin.length === 10 && asin !== '0000000000' && !asin.startsWith('0')) {
       logger.info('Found ASIN from search', { identifier, identifierType, asin });
+      
+      // Brief pause before clicking the result
+      const clickDelay = getHumanDelay('click');
+      await new Promise(resolve => setTimeout(resolve, clickDelay));
+      
       return asin;
     }
     
@@ -248,6 +288,11 @@ async function searchAmazonByIdentifier(
       if (asinMatch) {
         asin = asinMatch[1];
         logger.info('Found ASIN from product link', { identifier, identifierType, asin });
+        
+        // Brief pause before clicking the result
+        const clickDelay = getHumanDelay('click');
+        await new Promise(resolve => setTimeout(resolve, clickDelay));
+        
         return asin;
       }
     }
@@ -267,20 +312,24 @@ async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct> {
   // Add cache busters to URL
   url = addCacheBuster(url);
 
-  logger.info('Scraping product page with enhanced anti-detection', { asin });
+  logger.info('Scraping product page with human-like interaction patterns', { asin });
 
   // Get consistent headers that match current User-Agent
   const headers = getConsistentHeaders();
 
   const response = await axios.get(url, {
     headers,
-    timeout: 10000,
+    timeout: 15000, // 15 seconds
     maxRedirects: 5,
     validateStatus: (status) => status === 200,
+    signal: AbortSignal.timeout(20000), // Hard timeout at 20 seconds
   });
   
-  // Add "reading" delay to simulate human looking at page
-  await addReadingDelay();
+  // Initial page load - brief scan of top content
+  await addReadingDelay('brief');
+  
+  // Simulate scrolling down to see more product details
+  await simulateScrolling(4);
 
   const $ = cheerio.load(response.data);
 
@@ -295,80 +344,89 @@ async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct> {
     price = parseFloat(`${priceWhole}.${priceFraction || '00'}`);
   }
 
-  // Helper function to clean and normalize image URLs
+  // Helper function to clean and normalize image URLs to get full resolution
   const cleanImageUrl = (url: string): string => {
     if (!url) return '';
     // Remove Amazon's size modifiers to get full resolution
     // Patterns: ._SL500_.jpg, ._AC_SX425_.jpg, etc.
-    return url.replace(/\._[A-Z0-9_]+_\./, '.').replace(/\._[A-Z0-9_]+\.jpg/, '.jpg');
+    return url.replace(/\._[A-Z0-9_]+_\./g, '.').replace(/\._[A-Z0-9_]+\.(jpg|png|gif)/g, '.$1');
+  };
+  
+  // Helper to check if URL is a low-res thumbnail
+  const isLowResThumbnail = (url: string): boolean => {
+    // Thumbnails typically have _US40_, _SX38_, _SY50_ or similar small dimensions
+    return /\._[A-Z]{2,4}\d{2,3}_\./.test(url) || url.includes('_SS') || url.includes('_US40_');
   };
 
-  // Extract images - Gets ALL product images from Amazon (typically 5-7 images)
+  // Extract images - Gets main product images only (not thumbnails)
   const images: string[] = [];
   const imageSet = new Set<string>();
 
-  // Method 1: Extract from imageBlock data attribute
-  const imageBlockData = $('#imageBlock').attr('data-a-dynamic-image');
-  if (imageBlockData) {
-    try {
-      const imageObj = JSON.parse(imageBlockData);
-      Object.keys(imageObj).forEach(url => {
-        const cleanUrl = cleanImageUrl(url);
-        if (cleanUrl) imageSet.add(cleanUrl);
-      });
-      logger.debug('Extracted from imageBlock', { asin, count: imageSet.size });
-    } catch (e) {
-      logger.warn('Failed to parse imageBlock', { asin });
-    }
-  }
-
-  // Method 2: Extract from thumbnail strip (altImages)
-  $('#altImages img').each((_, img) => {
-    const src = $(img).attr('src');
-    if (src && !src.includes('play-icon')) {
-      const cleanUrl = cleanImageUrl(src);
-      if (cleanUrl) imageSet.add(cleanUrl);
-    }
-  });
-
-  // Method 3: Look for colorImages in page scripts (high-res images)
+  // Method 1: Look for colorImages/imageGalleryData in page scripts (BEST - high-res images)
+  // This is the primary source for full-resolution product images
   $('script:not([src])').each((_, el) => {
     const scriptContent = $(el).html() || '';
     
     // Try to find colorImages or imageGalleryData
     if (scriptContent.includes('colorImages') || scriptContent.includes('ImageBlockATF')) {
-      // Extract hiRes images
+      // Priority 1: Extract hiRes images (highest quality)
       const hiResMatches = scriptContent.match(/"hiRes":"(https:\/\/[^"]+)"/g);
       if (hiResMatches) {
         hiResMatches.forEach(match => {
           const urlMatch = match.match(/"hiRes":"([^"]+)"/);
           if (urlMatch && urlMatch[1] !== 'null') {
             const cleanUrl = cleanImageUrl(urlMatch[1]);
-            if (cleanUrl) imageSet.add(cleanUrl);
+            if (cleanUrl && !isLowResThumbnail(cleanUrl)) {
+              imageSet.add(cleanUrl);
+            }
           }
         });
       }
       
-      // Extract large images
-      const largeMatches = scriptContent.match(/"large":"(https:\/\/[^"]+)"/g);
-      if (largeMatches) {
-        largeMatches.forEach(match => {
-          const urlMatch = match.match(/"large":"([^"]+)"/);
-          if (urlMatch && urlMatch[1] !== 'null') {
-            const cleanUrl = cleanImageUrl(urlMatch[1]);
-            if (cleanUrl) imageSet.add(cleanUrl);
-          }
-        });
+      // Priority 2: Extract large images (if no hiRes found)
+      if (imageSet.size === 0) {
+        const largeMatches = scriptContent.match(/"large":"(https:\/\/[^"]+)"/g);
+        if (largeMatches) {
+          largeMatches.forEach(match => {
+            const urlMatch = match.match(/"large":"([^"]+)"/);
+            if (urlMatch && urlMatch[1] !== 'null') {
+              const cleanUrl = cleanImageUrl(urlMatch[1]);
+              if (cleanUrl && !isLowResThumbnail(cleanUrl)) {
+                imageSet.add(cleanUrl);
+              }
+            }
+          });
+        }
       }
     }
   });
 
-  // Method 4: Main product image as fallback
+  // Method 2: Extract from imageBlock data attribute (FALLBACK)
+  // Only use if Method 1 didn't find images
+  if (imageSet.size === 0) {
+    const imageBlockData = $('#imageBlock').attr('data-a-dynamic-image');
+    if (imageBlockData) {
+      try {
+        const imageObj = JSON.parse(imageBlockData);
+        Object.keys(imageObj).forEach(url => {
+          const cleanUrl = cleanImageUrl(url);
+          if (cleanUrl && !isLowResThumbnail(url)) {
+            imageSet.add(cleanUrl);
+          }
+        });
+        logger.debug('Extracted from imageBlock', { asin, count: imageSet.size });
+      } catch (e) {
+        logger.warn('Failed to parse imageBlock', { asin });
+      }
+    }
+  }
+
+  // Method 3: Main product image as last resort fallback
   if (imageSet.size === 0) {
     const mainImage = $('#landingImage').attr('src') || 
                      $('#imgBlkFront').attr('src') ||
                      $('img[data-old-hires]').attr('data-old-hires');
-    if (mainImage) {
+    if (mainImage && !isLowResThumbnail(mainImage)) {
       const cleanUrl = cleanImageUrl(mainImage);
       if (cleanUrl) imageSet.add(cleanUrl);
     }
@@ -380,13 +438,13 @@ async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct> {
   logger.info('Image extraction complete', { 
     asin, 
     totalFound: images.length,
-    methods: {
-      imageBlock: imageBlockData ? 'found' : 'not found',
-      thumbnails: $('#altImages img').length,
-      scripts: 'searched'
-    }
+    uniqueImages: imageSet.size,
+    source: imageSet.size > 0 ? 'scripts or imageBlock' : 'fallback'
   });
 
+  // Simulate reading bullets (people read these carefully)
+  await addReadingDelay('normal');
+  
   // Extract bullets
   const bullets: string[] = [];
   $('#feature-bullets ul li span.a-list-item').each((_, el) => {
@@ -402,7 +460,10 @@ async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct> {
   const description = $('#productDescription p').text().trim() ||
     $('#feature-bullets').text().trim().substring(0, 500);
 
-  // Extract UPC
+  // Extract UPC (simulate scrolling to product details section)
+  const scrollDelay = getHumanDelay('scroll');
+  await new Promise(resolve => setTimeout(resolve, scrollDelay));
+  
   let upc: string | undefined;
   $('tr').each((_, el) => {
     const label = $(el).find('th').text().trim();
@@ -438,7 +499,7 @@ async function uploadImagesToSupabase(
 ): Promise<any[]> {
   const imageRecords = [];
   
-  logger.info('Starting image upload', { 
+  logger.info('Starting human-like image loading', { 
     asin, 
     totalImages: imageUrls.length,
     willUpload: Math.min(imageUrls.length, 12)
@@ -447,7 +508,16 @@ async function uploadImagesToSupabase(
   for (let i = 0; i < Math.min(imageUrls.length, 12); i++) {
     try {
       const imageUrl = imageUrls[i];
-      logger.debug(`Downloading image ${i + 1}`, { asin, imageUrl });
+      
+      // Add realistic delay between image loads (humans don't load all at once)
+      await addImageLoadDelay(i, Math.min(imageUrls.length, 12));
+      
+      logger.debug(`Downloading image ${i + 1} with human-like timing`, { asin, imageUrl });
+      
+      // Simulate hovering over thumbnail before loading
+      if (i > 0) {
+        await simulateMouseMovement();
+      }
       
       // Download image - ONE TRY ONLY with consistent headers
       const headers = getConsistentHeaders();

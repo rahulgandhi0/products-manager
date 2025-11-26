@@ -63,11 +63,39 @@ const tracker: RequestTracker = {
 
 /**
  * Get random delay with normal distribution (human-like timing)
+ * Can be customized for different action types
  */
-export function getHumanDelay(): number {
-  // Random delay between 2-5 seconds with normal distribution
-  const min = 2000;
-  const max = 5000;
+export function getHumanDelay(actionType: 'page_load' | 'search' | 'click' | 'scroll' | 'image' = 'page_load'): number {
+  let min: number, max: number;
+  
+  switch (actionType) {
+    case 'page_load':
+      // Longer delay between page loads (2-5 seconds)
+      min = 2000;
+      max = 5000;
+      break;
+    case 'search':
+      // Moderate delay for search actions (1.5-4 seconds)
+      min = 1500;
+      max = 4000;
+      break;
+    case 'click':
+      // Quick delay for clicks (300-800ms)
+      min = 300;
+      max = 800;
+      break;
+    case 'scroll':
+      // Natural scrolling pace (500-1500ms)
+      min = 500;
+      max = 1500;
+      break;
+    case 'image':
+      // Variable delay between image loads (800-2500ms)
+      min = 800;
+      max = 2500;
+      break;
+  }
+  
   const mean = (min + max) / 2;
   const stdDev = (max - min) / 6;
   
@@ -146,16 +174,19 @@ export function checkRateLimit(): {
     }
   }
   
-  // Check minimum delay between requests (2-5 seconds with variance)
-  const minDelay = getHumanDelay();
+  // Check minimum delay between requests (variable human-like timing)
+  // Use different action types to vary the delays
+  const actionTypes: Array<'page_load' | 'search'> = ['page_load', 'search'];
+  const randomActionType = actionTypes[Math.floor(Math.random() * actionTypes.length)];
+  const minDelay = getHumanDelay(randomActionType);
   const timeSinceLastRequest = now - tracker.lastRequest;
   
   if (timeSinceLastRequest < minDelay && tracker.lastRequest > 0) {
     const waitTime = minDelay - timeSinceLastRequest;
-    logger.debug('Too soon since last request', { waitTime });
+    logger.debug('Too soon since last request', { waitTime, actionType: randomActionType });
     return {
       allowed: false,
-      reason: 'Minimum delay not met',
+      reason: 'Minimum delay not met - varying pace like human',
       waitTime: Math.ceil(waitTime / 1000),
     };
   }
@@ -311,11 +342,75 @@ export function getConsistentHeaders(): Record<string, string> {
 
 /**
  * Add a "reading" delay (simulate user reading content)
+ * Varies based on content type
  */
-export async function addReadingDelay(): Promise<void> {
-  // Random delay between 1-3 seconds (reading time)
-  const delay = 1000 + Math.random() * 2000;
+export async function addReadingDelay(contentType: 'brief' | 'normal' | 'detailed' = 'normal'): Promise<void> {
+  let min: number, max: number;
+  
+  switch (contentType) {
+    case 'brief':
+      // Quick scan (500ms-1.5s)
+      min = 500;
+      max = 1500;
+      break;
+    case 'normal':
+      // Normal reading (1-3 seconds)
+      min = 1000;
+      max = 3000;
+      break;
+    case 'detailed':
+      // Careful reading (2-5 seconds)
+      min = 2000;
+      max = 5000;
+      break;
+  }
+  
+  const delay = min + Math.random() * (max - min);
   await new Promise(resolve => setTimeout(resolve, delay));
+}
+
+/**
+ * Simulate scrolling behavior - humans don't load everything at once
+ */
+export async function simulateScrolling(sections: number = 3): Promise<void> {
+  logger.debug('Simulating scroll behavior', { sections });
+  
+  for (let i = 0; i < sections; i++) {
+    // Random scroll delay (400-1200ms between scrolls)
+    const scrollDelay = 400 + Math.random() * 800;
+    await new Promise(resolve => setTimeout(resolve, scrollDelay));
+    
+    // Occasionally pause longer (like reading something)
+    if (Math.random() > 0.7) {
+      const pauseDelay = 800 + Math.random() * 1500;
+      await new Promise(resolve => setTimeout(resolve, pauseDelay));
+    }
+  }
+}
+
+/**
+ * Simulate mouse movement patterns - random micro-pauses
+ */
+export async function simulateMouseMovement(): Promise<void> {
+  // Tiny delay to simulate moving mouse to element (50-200ms)
+  const delay = 50 + Math.random() * 150;
+  await new Promise(resolve => setTimeout(resolve, delay));
+}
+
+/**
+ * Add human-like typing delay (for search queries)
+ */
+export async function addTypingDelay(textLength: number): Promise<void> {
+  // Humans type at ~40-60 WPM (characters per minute)
+  // That's roughly 200-300ms per character
+  const baseDelay = 200 + Math.random() * 100; // 200-300ms per char
+  const totalDelay = baseDelay * textLength;
+  
+  // Cap at reasonable maximum
+  const finalDelay = Math.min(totalDelay, 3000);
+  
+  logger.debug('Simulating typing', { textLength, delay: finalDelay });
+  await new Promise(resolve => setTimeout(resolve, finalDelay));
 }
 
 /**
@@ -359,11 +454,43 @@ export function generateRandomOrderId(): string {
 
 /**
  * Add request jitter (prevents timing pattern detection)
+ * Now with more variability
  */
 export async function addRequestJitter(): Promise<void> {
-  // Small random delay (100-500ms) to break timing patterns
-  const jitter = 100 + Math.random() * 400;
+  // Variable random delay (100-800ms) with occasional longer pauses
+  let jitter: number;
+  
+  if (Math.random() > 0.85) {
+    // 15% chance of longer pause (like user got distracted)
+    jitter = 1500 + Math.random() * 2000; // 1.5-3.5 seconds
+  } else {
+    // Normal jitter
+    jitter = 100 + Math.random() * 700; // 100-800ms
+  }
+  
   await new Promise(resolve => setTimeout(resolve, jitter));
+}
+
+/**
+ * Add delay between image loads (humans don't download all images simultaneously)
+ */
+export async function addImageLoadDelay(imageIndex: number, totalImages: number): Promise<void> {
+  // First image loads quickly (already visible)
+  if (imageIndex === 0) {
+    await new Promise(resolve => setTimeout(resolve, 200 + Math.random() * 300));
+    return;
+  }
+  
+  // Subsequent images take longer (scrolling, lazy loading)
+  const baseDelay = getHumanDelay('image');
+  
+  // Later images sometimes take even longer (need to scroll more)
+  const scrollPenalty = imageIndex > 3 ? Math.random() * 1000 : 0;
+  
+  const totalDelay = baseDelay + scrollPenalty;
+  
+  logger.debug('Image load delay', { imageIndex, totalImages, delay: totalDelay });
+  await new Promise(resolve => setTimeout(resolve, totalDelay));
 }
 
 /**

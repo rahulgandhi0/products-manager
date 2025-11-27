@@ -18,7 +18,22 @@ export default function HomePage() {
   const identifyProductCode = (input: string): { type: string; code: string } | null => {
     const trimmed = input.trim();
     
-    // ASIN: 10 alphanumeric, starts with B
+    // EAN-13: 13 digits (check first to avoid confusion with UPC)
+    if (/^\d{13}$/.test(trimmed)) {
+      return { type: 'EAN', code: trimmed };
+    }
+    
+    // UPC-A: 12 digits
+    if (/^\d{12}$/.test(trimmed)) {
+      return { type: 'UPC', code: trimmed };
+    }
+    
+    // UPC-A with missing leading zero: 11 digits (add the zero back)
+    if (/^\d{11}$/.test(trimmed)) {
+      return { type: 'UPC', code: '0' + trimmed };
+    }
+    
+    // ASIN: 10 alphanumeric, starts with B (most common)
     if (/^B[A-Z0-9]{9}$/i.test(trimmed)) {
       return { type: 'ASIN', code: trimmed.toUpperCase() };
     }
@@ -31,16 +46,6 @@ export default function HomePage() {
     // Other 10-char codes (might be ASIN variants)
     if (/^[A-Z0-9]{10}$/i.test(trimmed)) {
       return { type: 'ASIN', code: trimmed.toUpperCase() };
-    }
-    
-    // UPC-A: 12 digits
-    if (/^\d{12}$/.test(trimmed)) {
-      return { type: 'UPC', code: trimmed };
-    }
-    
-    // EAN-13: 13 digits
-    if (/^\d{13}$/.test(trimmed)) {
-      return { type: 'EAN', code: trimmed };
     }
     
     // UPC-E: 8 digits (sometimes 6)

@@ -259,13 +259,9 @@ async function searchAmazonByIdentifier(
     
     logger.info('Calling Apify actor for search', { identifier, identifierType, searchUrl });
     
-    // Use free Amazon scraper actor (7KgyOHHEiPEcilZXM)
+    // Use Axesso Amazon Product Scraper (7KgyOHHEiPEcilZXM)
     const run = await client.actor('7KgyOHHEiPEcilZXM').call({
-      startUrls: [searchUrl],
-      maxItems: 1,
-      proxyConfiguration: {
-        useApifyProxy: true,
-      },
+      urls: [searchUrl],
     });
 
     logger.info('Apify search run completed', { runId: run.id, status: run.status });
@@ -325,13 +321,9 @@ async function scrapeAmazonProductWithApify(asin: string): Promise<AmazonProduct
   logger.info('Starting Apify actor run', { asin, productUrl });
 
   try {
-    // Run the Apify actor (free Amazon scraper: 7KgyOHHEiPEcilZXM)
+    // Run the Apify actor (Axesso Amazon Product Scraper: 7KgyOHHEiPEcilZXM)
     const runInput = {
-      startUrls: [productUrl],
-      maxItems: 1,
-      proxyConfiguration: {
-        useApifyProxy: true,
-      },
+      urls: [productUrl],
     };
     
     if (DEBUG_MODE) {
@@ -363,84 +355,116 @@ async function scrapeAmazonProductWithApify(asin: string): Promise<AmazonProduct
     
     logger.info('Apify scraping complete', { 
       asin, 
+      statusCode: apifyResult.statusCode,
+      statusMessage: apifyResult.statusMessage,
       hasTitle: !!apifyResult.title,
       hasPrice: !!apifyResult.price,
-      imageCount: apifyResult.images?.length || 0,
+      imageCount: apifyResult.imageUrlList?.length || 0,
       resultKeys: Object.keys(apifyResult),
     });
 
-    // Parse price - handle different formats from Apify
+    // Check if scraping was successful
+    if (apifyResult.statusCode !== 200) {
+      throw new Error(`Axesso scraper failed: ${apifyResult.statusMessage || 'Unknown error'}`);
+    }
+
+    // Parse price - Axesso returns price as number
     let price: number | undefined;
-    if (apifyResult.price) {
-      if (typeof apifyResult.price === 'number') {
-        price = apifyResult.price;
-      } else if (typeof apifyResult.price === 'string') {
-        // Remove currency symbols and parse
-        const priceStr = apifyResult.price.replace(/[^0-9.]/g, '');
-        price = parseFloat(priceStr);
-      } else if (apifyResult.price?.value !== undefined) {
-        price = parseFloat(apifyResult.price.value);
-      }
+    if (apifyResult.price !== undefined && apifyResult.price !== null) {
+      price = typeof apifyResult.price === 'number' ? apifyResult.price : parseFloat(apifyResult.price);
+    } else if (apifyResult.retailPrice !== undefined && apifyResult.retailPrice !== null) {
+      // Fallback to retailPrice if price is not available
+      price = typeof apifyResult.retailPrice === 'number' ? apifyResult.retailPrice : parseFloat(apifyResult.retailPrice);
     }
 
-    // Extract images - ensure we have an array of image URLs
+    // Extract images - Axesso returns imageUrlList
     const images: string[] = [];
-    if (Array.isArray(apifyResult.images)) {
-      images.push(...apifyResult.images.filter((img: any) => typeof img === 'string'));
-    } else if (apifyResult.images && typeof apifyResult.images === 'object') {
-      // Sometimes images come as an object with URLs as keys
-      images.push(...Object.keys(apifyResult.images));
-    } else if (apifyResult.mainImage && typeof apifyResult.mainImage === 'string') {
-      images.push(apifyResult.mainImage);
-    } else if (apifyResult.thumbnailImage && typeof apifyResult.thumbnailImage === 'string') {
-      images.push(apifyResult.thumbnailImage);
+    if (Array.isArray(apifyResult.imageUrlList)) {
+      images.push(...apifyResult.imageUrlList.filter((img: any) => typeof img === 'string' && img));
+    }
+    // Add main image if available and not already in list
+    if (apifyResult.mainImage?.imageUrl && !images.includes(apifyResult.mainImage.imageUrl)) {
+      images.unshift(apifyResult.mainImage.imageUrl);
     }
 
-    // Extract bullets/features
+    // Extract bullets/features - Axesso returns features array
     const bullets: string[] = [];
     if (Array.isArray(apifyResult.features)) {
-      bullets.push(...apifyResult.features.filter((b: any) => typeof b === 'string'));
-    } else if (Array.isArray(apifyResult.bullets)) {
-      bullets.push(...apifyResult.bullets.filter((b: any) => typeof b === 'string'));
-    } else if (Array.isArray(apifyResult.featureBullets)) {
-      bullets.push(...apifyResult.featureBullets.filter((b: any) => typeof b === 'string'));
+      bullets.push(...apifyResult.features.filter((b: any) => typeof b === 'string' && b));
     }
 
-    // Parse dimensions if available
-    let dimensions: AmazonProduct['dimensions'];
-    if (apifyResult.dimensions) {
-      const dim = apifyResult.dimensions;
-      if (dim.length && dim.width && dim.height) {
-        dimensions = {
-          length: parseFloat(dim.length),
-          width: parseFloat(dim.width),
-          height: parseFloat(dim.height),
-          unit: dim.unit?.toUpperCase() === 'CENTIMETER' ? 'CENTIMETER' : 'INCH',
-        };
+    // Extract brand - try multiple fields
+    let brand: string | undefined;
+    if (apifyResult.manufacturer) {
+      // Manufacturer often includes "Visit the X Store" - extract just the brand name
+      brand = apifyResult.manufacturer.replace(/^Visit the\s+/i, '').replace(/\s+Store$/i, '').trim();
+    }
+    // Try to find brand from productDetails
+    if (!brand && Array.isArray(apifyResult.productDetails)) {
+      const brandDetail = apifyResult.productDetails.find((d: any) => d.name === 'Brand');
+      if (brandDetail?.value) {
+        brand = brandDetail.value;
       }
     }
 
-    // Parse weight if available
+    // Extract UPC from productDetails if available
+    let upc: string | undefined;
+    if (Array.isArray(apifyResult.productDetails)) {
+      const upcDetail = apifyResult.productDetails.find((d: any) => 
+        d.name === 'UPC' || d.name === 'EAN' || d.name === 'Item model number'
+      );
+      if (upcDetail?.value) {
+        upc = upcDetail.value;
+      }
+    }
+
+    // Parse dimensions from productDetails if available
+    let dimensions: AmazonProduct['dimensions'];
+    if (Array.isArray(apifyResult.productDetails)) {
+      const dimensionDetail = apifyResult.productDetails.find((d: any) => 
+        d.name === 'Product Dimensions' || d.name === 'Item Dimensions'
+      );
+      if (dimensionDetail?.value) {
+        // Try to parse dimensions like "10 x 5 x 3 inches"
+        const match = dimensionDetail.value.match(/(\d+\.?\d*)\s*x\s*(\d+\.?\d*)\s*x\s*(\d+\.?\d*)\s*(inch|cm)/i);
+        if (match) {
+          dimensions = {
+            length: parseFloat(match[1]),
+            width: parseFloat(match[2]),
+            height: parseFloat(match[3]),
+            unit: match[4].toLowerCase().startsWith('cm') ? 'CENTIMETER' : 'INCH',
+          };
+        }
+      }
+    }
+
+    // Parse weight from productDetails if available
     let weight: AmazonProduct['weight'];
-    if (apifyResult.weight) {
-      const w = apifyResult.weight;
-      if (w.value) {
-        weight = {
-          value: parseFloat(w.value),
-          unit: w.unit?.toUpperCase() === 'KILOGRAM' ? 'KILOGRAM' : 'POUND',
-        };
+    if (Array.isArray(apifyResult.productDetails)) {
+      const weightDetail = apifyResult.productDetails.find((d: any) => 
+        d.name === 'Item Weight' || d.name === 'Shipping Weight'
+      );
+      if (weightDetail?.value) {
+        // Try to parse weight like "2.5 pounds" or "1.2 kg"
+        const match = weightDetail.value.match(/(\d+\.?\d*)\s*(pound|lb|kilogram|kg)/i);
+        if (match) {
+          weight = {
+            value: parseFloat(match[1]),
+            unit: match[2].toLowerCase().startsWith('k') ? 'KILOGRAM' : 'POUND',
+          };
+        }
       }
     }
 
     const amazonProduct: AmazonProduct = {
-      asin,
-      title: apifyResult.title || apifyResult.productTitle || apifyResult.name || '',
+      asin: apifyResult.asin || asin,
+      title: apifyResult.title || '',
       price,
       images,
-      description: apifyResult.description || apifyResult.productDescription || '',
+      description: apifyResult.productDescription || '',
       bullets,
-      brand: apifyResult.brand || apifyResult.manufacturer || apifyResult.brandName || undefined,
-      upc: apifyResult.upc || apifyResult.ean || undefined,
+      brand,
+      upc,
       dimensions,
       weight,
     };

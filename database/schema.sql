@@ -2,6 +2,10 @@
 -- EBAY LISTING AUTOMATION - DATABASE SCHEMA
 -- Supabase PostgreSQL Setup
 -- =====================================================
+-- 
+-- This file creates all tables, indexes, triggers, and storage
+-- Safe to run on new or existing databases (uses IF NOT EXISTS)
+-- =====================================================
 
 -- ============================================
 -- PRODUCTS TABLE
@@ -92,10 +96,18 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Create or replace trigger (safe to run multiple times)
+DROP TRIGGER IF EXISTS update_products_posted_at ON products;
+
 CREATE TRIGGER update_products_posted_at
 BEFORE UPDATE ON products
 FOR EACH ROW
 EXECUTE FUNCTION update_posted_at_column();
+
+-- Backfill posted_at for existing POSTED products (safe to run multiple times)
+UPDATE products 
+SET posted_at = updated_at 
+WHERE status = 'POSTED' AND posted_at IS NULL;
 
 -- ============================================
 -- STORAGE BUCKET
@@ -144,3 +156,8 @@ ALTER TABLE product_images DISABLE ROW LEVEL SECURITY;
 --   ('B09XYZ1234', 'AMZ-B09XYZ1234', 'Sample Product 1', 39.99, 29.99, 1, 'INACTIVE'),
 --   ('B08ABC5678', 'AMZ-B08ABC5678', 'Sample Product 2', 59.99, 44.99, 2, 'INACTIVE');
 
+-- =====================================================
+-- COMPLETE! 
+-- This schema includes all migrations and is safe to run
+-- on both new and existing databases.
+-- =====================================================

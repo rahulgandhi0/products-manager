@@ -7,31 +7,49 @@ import Logger from '@/lib/logger';
 
 const logger = new Logger('API_SCRAPE_AMAZON');
 
+// Debug mode - set to true for verbose logging
+const DEBUG_MODE = process.env.DEBUG_SCRAPER === 'true';
+
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  const startTime = Date.now();
+  
   try {
+    logger.info('=== SCRAPE REQUEST STARTED ===', { timestamp: new Date().toISOString() });
+    
+    // Log environment variables (masked)
+    logger.info('Environment check', {
+      hasApifyToken: !!(process.env.APIFY_API_TOKEN || process.env.APIFY_API_KEY),
+      hasSupabaseUrl: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
+      hasServiceRole: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+      nodeEnv: process.env.NODE_ENV,
+    });
+    
     const body = await req.json();
+    logger.info('Request body received', { body });
     
     // Support both old format (asin) and new format (identifier + identifierType)
     const identifier = body.identifier || body.asin;
     const identifierType = body.identifierType || 'ASIN';
 
     if (!identifier || typeof identifier !== 'string') {
+      logger.warn('Invalid identifier provided', { identifier, identifierType });
       return NextResponse.json(
         { success: false, error: 'Invalid product identifier' },
         { status: 400 }
       );
     }
 
-    logger.info('Processing product identifier', { identifier, identifierType });
+    logger.info('STEP 1: Processing product identifier', { identifier, identifierType });
 
     // Find ASIN based on identifier type
     let asin: string;
     
     if (identifierType === 'ASIN') {
       asin = identifier;
+      logger.info('STEP 2: Using ASIN directly', { asin });
     } else {
       // For UPC, EAN, SKU, FNSKU: search Amazon to find the ASIN using Apify
-      logger.info('Searching Amazon for product', { identifier, identifierType });
+      logger.info('STEP 2: Searching Amazon for product', { identifier, identifierType });
       const searchResult = await searchAmazonByIdentifier(identifier, identifierType);
       
       if (!searchResult) {
@@ -43,15 +61,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }
       
       asin = searchResult;
-      logger.info('Found ASIN from search', { identifier, identifierType, asin });
+      logger.info('STEP 2: Found ASIN from search', { identifier, identifierType, asin });
     }
 
     // Check if product already exists
-    const { data: existingProduct } = await supabaseAdmin
+    logger.info('STEP 3: Checking for existing product', { asin });
+    const { data: existingProduct, error: checkError } = await supabaseAdmin
       .from('products')
       .select('id, asin, title')
       .eq('asin', asin)
       .single();
+
+    if (checkError && checkError.code !== 'PGRST116') {
+      logger.error('Database check error', checkError, { asin });
+      throw new Error(`Database error: ${checkError.message}`);
+    }
 
     if (existingProduct) {
       logger.info('Product already exists', { asin, identifier, identifierType });
@@ -63,60 +87,84 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     // Scrape Amazon product using Apify
+    logger.info('STEP 4: Starting Apify scrape', { asin });
     const amazonProduct = await scrapeAmazonProductWithApify(asin);
+    logger.info('STEP 4: Apify scrape completed', { 
+      asin, 
+      hasTitle: !!amazonProduct.title,
+      hasPrice: !!amazonProduct.price,
+      imageCount: amazonProduct.images.length 
+    });
 
     // Calculate eBay price (25% discount by default)
+    logger.info('STEP 5: Calculating prices', { amazonPrice: amazonProduct.price });
     const discount = parseFloat(process.env.DEFAULT_PRICE_DISCOUNT || '0.25');
     const ebayPrice = amazonProduct.price 
       ? amazonProduct.price * (1 - discount) 
       : undefined;
 
     const quantity = parseInt(process.env.DEFAULT_QUANTITY || '1');
+    logger.info('Price calculation complete', { amazonPrice: amazonProduct.price, ebayPrice, discount, quantity });
 
     // Insert product into database
+    logger.info('STEP 6: Inserting product into database', { asin });
+    const productData = {
+      asin: amazonProduct.asin,
+      sku: `AMZ-${amazonProduct.asin}`,
+      title: amazonProduct.title,
+      description: amazonProduct.description,
+      brand: amazonProduct.brand,
+      upc: amazonProduct.upc,
+      amazon_price: amazonProduct.price,
+      ebay_price: ebayPrice,
+      quantity: quantity,
+      weight_value: amazonProduct.weight?.value,
+      weight_unit: amazonProduct.weight?.unit,
+      length: amazonProduct.dimensions?.length,
+      width: amazonProduct.dimensions?.width,
+      height: amazonProduct.dimensions?.height,
+      dimension_unit: amazonProduct.dimensions?.unit,
+      condition_id: 'NEW',
+      format: 'FixedPrice',
+      status: 'INACTIVE',
+      raw_amazon_data: {
+        bullets: amazonProduct.bullets,
+        dimensions: amazonProduct.dimensions,
+        weight: amazonProduct.weight,
+      },
+    };
+    
+    if (DEBUG_MODE) {
+      logger.info('Product data to insert', { productData });
+    }
+    
     const { data: product, error: productError } = await supabaseAdmin
       .from('products')
-      .insert({
-        asin: amazonProduct.asin,
-        sku: `AMZ-${amazonProduct.asin}`,
-        title: amazonProduct.title,
-        description: amazonProduct.description,
-        brand: amazonProduct.brand,
-        upc: amazonProduct.upc,
-        amazon_price: amazonProduct.price,
-        ebay_price: ebayPrice,
-        quantity: quantity,
-        weight_value: amazonProduct.weight?.value,
-        weight_unit: amazonProduct.weight?.unit,
-        length: amazonProduct.dimensions?.length,
-        width: amazonProduct.dimensions?.width,
-        height: amazonProduct.dimensions?.height,
-        dimension_unit: amazonProduct.dimensions?.unit,
-        condition_id: 'NEW',
-        format: 'FixedPrice',
-        status: 'INACTIVE',
-        raw_amazon_data: {
-          bullets: amazonProduct.bullets,
-          dimensions: amazonProduct.dimensions,
-          weight: amazonProduct.weight,
-        },
-      })
+      .insert(productData)
       .select()
       .single();
 
-    if (productError) throw productError;
+    if (productError) {
+      logger.error('Database insert error', productError, { asin });
+      throw new Error(`Database insert failed: ${productError.message}`);
+    }
+    
+    logger.info('STEP 6: Product inserted successfully', { productId: product.id });
 
     // Download and upload images to Supabase storage
+    logger.info('STEP 7: Starting image uploads', { imageCount: amazonProduct.images.length });
     const imageRecords = await uploadImagesToSupabase(
       product.id,
       amazonProduct.asin,
       amazonProduct.images
     );
 
-    logger.info('Product created successfully', { 
+    const elapsed = Date.now() - startTime;
+    logger.info('=== SCRAPE REQUEST COMPLETED ===', { 
       asin, 
       productId: product.id,
       imageCount: imageRecords.length,
+      elapsedMs: elapsed,
     });
 
     return NextResponse.json({
@@ -125,17 +173,41 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         product,
         images: imageRecords,
       },
+      debug: DEBUG_MODE ? { elapsedMs: elapsed } : undefined,
     });
 
   } catch (error: any) {
-    logger.error('Failed to process product', error, { 
+    const elapsed = Date.now() - startTime;
+    
+    logger.error('=== SCRAPE REQUEST FAILED ===', error, { 
       message: error.message,
+      stack: error.stack,
+      code: error.code,
+      name: error.name,
+      elapsedMs: elapsed,
     });
+    
+    // Build detailed error response
+    const errorDetails: any = {
+      success: false,
+      error: error.message || 'Failed to process Amazon product',
+    };
+    
+    // Add debug info in development
+    if (DEBUG_MODE || process.env.NODE_ENV === 'development') {
+      errorDetails.debug = {
+        errorType: error.name,
+        errorCode: error.code,
+        stack: error.stack?.split('\n').slice(0, 5), // First 5 lines of stack
+        elapsedMs: elapsed,
+      };
+    }
     
     // Handle Apify-specific errors
     if (error.message?.includes('Apify')) {
+      logger.error('Apify error detected', { message: error.message });
       return NextResponse.json(
-        { success: false, error: `Apify error: ${error.message}` },
+        { ...errorDetails, error: `Apify error: ${error.message}` },
         { status: 500 }
       );
     }
@@ -143,13 +215,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // Handle timeout errors
     if (error.message?.includes('timeout') || error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
       return NextResponse.json(
-        { success: false, error: 'Request timed out. Please try again.' },
+        { ...errorDetails, error: 'Request timed out. Please try again.' },
         { status: 408 }
       );
     }
     
+    // Handle database errors
+    if (error.message?.includes('Database')) {
+      return NextResponse.json(
+        { ...errorDetails, error: `Database error: ${error.message}` },
+        { status: 500 }
+      );
+    }
+    
     return NextResponse.json(
-      { success: false, error: error.message || 'Failed to process Amazon product' },
+      errorDetails,
       { status: 500 }
     );
   }
@@ -163,29 +243,44 @@ async function searchAmazonByIdentifier(
     // Initialize Apify client
     const apifyToken = process.env.APIFY_API_TOKEN || process.env.APIFY_API_KEY;
     if (!apifyToken) {
+      logger.error('Apify token not configured');
       throw new Error('APIFY_API_TOKEN or APIFY_API_KEY is not configured');
     }
 
+    logger.info('Initializing Apify client for search', { 
+      tokenLength: apifyToken.length,
+      tokenPrefix: apifyToken.substring(0, 10) + '...' 
+    });
+    
     const client = new ApifyClient({ token: apifyToken });
     
     // Search Amazon using the identifier
     const searchUrl = `https://www.amazon.com/s?k=${encodeURIComponent(identifier)}`;
     
-    logger.info('Searching Amazon via Apify', { identifier, identifierType, searchUrl });
+    logger.info('Calling Apify actor for search', { identifier, identifierType, searchUrl });
     
-    // Use junglee/amazon-crawler for product search
-    const run = await client.actor('junglee/amazon-crawler').call({
-      startUrls: [{ url: searchUrl }],
+    // Use free Amazon scraper actor (7KgyOHHEiPEcilZXM)
+    const run = await client.actor('7KgyOHHEiPEcilZXM').call({
+      startUrls: [searchUrl],
       maxItems: 1,
-      country: 'US',
+      proxyConfiguration: {
+        useApifyProxy: true,
+      },
     });
+
+    logger.info('Apify search run completed', { runId: run.id, status: run.status });
 
     // Fetch results from the run's dataset
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    logger.info('Apify search results fetched', { itemCount: items.length });
     
     if (items.length === 0 || !items[0]) {
       logger.warn('No search results from Apify', { identifier, identifierType });
       return null;
+    }
+
+    if (DEBUG_MODE) {
+      logger.info('Apify search result', { result: items[0] });
     }
 
     // Extract ASIN from the result
@@ -197,11 +292,16 @@ async function searchAmazonByIdentifier(
       return asin;
     }
     
-    logger.warn('No valid ASIN found in Apify results', { identifier, identifierType });
+    logger.warn('No valid ASIN found in Apify results', { identifier, identifierType, result });
     return null;
     
-  } catch (error) {
-    logger.error('Failed to search Amazon via Apify', error, { identifier, identifierType });
+  } catch (error: any) {
+    logger.error('Failed to search Amazon via Apify', error, { 
+      identifier, 
+      identifierType,
+      message: error.message,
+      stack: error.stack,
+    });
     return null;
   }
 }
@@ -209,37 +309,64 @@ async function searchAmazonByIdentifier(
 async function scrapeAmazonProductWithApify(asin: string): Promise<AmazonProduct> {
   const apifyToken = process.env.APIFY_API_TOKEN || process.env.APIFY_API_KEY;
   if (!apifyToken) {
+    logger.error('Apify token not configured');
     throw new Error('APIFY_API_TOKEN or APIFY_API_KEY is not configured. Please add it to your .env file.');
   }
+
+  logger.info('Initializing Apify client for scraping', { 
+    asin,
+    tokenLength: apifyToken.length,
+    tokenPrefix: apifyToken.substring(0, 10) + '...' 
+  });
 
   const client = new ApifyClient({ token: apifyToken });
   const productUrl = `https://www.amazon.com/dp/${asin}`;
 
-  logger.info('Scraping Amazon product via Apify', { asin, productUrl });
+  logger.info('Starting Apify actor run', { asin, productUrl });
 
   try {
-    // Run the Apify actor (junglee/amazon-crawler)
-    const run = await client.actor('junglee/amazon-crawler').call({
-      startUrls: [{ url: productUrl }],
+    // Run the Apify actor (free Amazon scraper: 7KgyOHHEiPEcilZXM)
+    const runInput = {
+      startUrls: [productUrl],
       maxItems: 1,
-      country: 'US',
-      scrapeProductDetail: true,
+      proxyConfiguration: {
+        useApifyProxy: true,
+      },
+    };
+    
+    if (DEBUG_MODE) {
+      logger.info('Apify actor input', { runInput });
+    }
+    
+    const run = await client.actor('7KgyOHHEiPEcilZXM').call(runInput);
+    logger.info('Apify actor run completed', { 
+      runId: run.id, 
+      status: run.status,
+      datasetId: run.defaultDatasetId,
     });
 
     // Fetch results from the run's dataset
+    logger.info('Fetching dataset items', { datasetId: run.defaultDatasetId });
     const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    logger.info('Dataset items fetched', { itemCount: items.length });
     
     if (items.length === 0 || !items[0]) {
+      logger.error('No data in Apify result', { asin, datasetId: run.defaultDatasetId });
       throw new Error(`No data returned from Apify for ASIN: ${asin}`);
     }
 
     const apifyResult = items[0] as any;
+    
+    if (DEBUG_MODE) {
+      logger.info('Raw Apify result', { apifyResult });
+    }
     
     logger.info('Apify scraping complete', { 
       asin, 
       hasTitle: !!apifyResult.title,
       hasPrice: !!apifyResult.price,
       imageCount: apifyResult.images?.length || 0,
+      resultKeys: Object.keys(apifyResult),
     });
 
     // Parse price - handle different formats from Apify
@@ -325,10 +452,19 @@ async function scrapeAmazonProductWithApify(asin: string): Promise<AmazonProduct
       imageCount: amazonProduct.images.length,
     });
 
+    if (DEBUG_MODE) {
+      logger.info('Final AmazonProduct object', { amazonProduct });
+    }
+
     return amazonProduct;
     
   } catch (error: any) {
-    logger.error('Failed to scrape via Apify', error, { asin });
+    logger.error('Failed to scrape via Apify', error, { 
+      asin,
+      message: error.message,
+      stack: error.stack,
+      name: error.name,
+    });
     throw new Error(`Apify scraping failed: ${error.message}`);
   }
 }

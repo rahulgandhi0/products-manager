@@ -1,62 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
-import * as cheerio from 'cheerio';
+import { ApifyClient } from 'apify-client';
 import { supabaseAdmin } from '@/lib/supabase';
 import { AmazonProduct } from '@/lib/types';
 import Logger from '@/lib/logger';
-import {
-  checkRateLimit,
-  recordRequest,
-  recordError,
-  getConsistentHeaders,
-  getHumanDelay,
-  addReadingDelay,
-  getStats,
-  addRequestJitter,
-  addCacheBuster,
-  simulateScrolling,
-  simulateMouseMovement,
-  addTypingDelay,
-  addImageLoadDelay,
-} from '@/lib/scraper-utils';
 
 const logger = new Logger('API_SCRAPE_AMAZON');
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  /**
-   * DISCLAIMER: Web scraping Amazon violates their Terms of Service.
-   * This implementation uses anti-detection measures but remains non-compliant.
-   * Use at your own risk. Consider Amazon's Product Advertising API for compliance.
-   */
-  
-  // Advanced rate limiting with human-like behavior
-  const rateLimitCheck = checkRateLimit();
-  
-  if (!rateLimitCheck.allowed) {
-    logger.warn('Rate limit check failed', rateLimitCheck);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: rateLimitCheck.reason || 'Rate limit exceeded',
-        waitTime: rateLimitCheck.waitTime,
-      },
-      { status: 429 }
-    );
-  }
-  
-  // Add human-like delay before processing (page load timing)
-  const delay = getHumanDelay('page_load');
-  logger.debug('Adding human page load delay', { delay });
-  await new Promise(resolve => setTimeout(resolve, delay));
-  
-  // Add variable jitter to break timing patterns
-  await addRequestJitter();
-  
-  // Create a timeout promise that rejects after 25 seconds
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Request timeout after 25 seconds')), 25000);
-  });
-  
   try {
     const body = await req.json();
     
@@ -79,7 +30,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (identifierType === 'ASIN') {
       asin = identifier;
     } else {
-      // For UPC, EAN, SKU, FNSKU: search Amazon to find the ASIN
+      // For UPC, EAN, SKU, FNSKU: search Amazon to find the ASIN using Apify
       logger.info('Searching Amazon for product', { identifier, identifierType });
       const searchResult = await searchAmazonByIdentifier(identifier, identifierType);
       
@@ -111,14 +62,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }, { status: 409 });
     }
 
-    // Scrape Amazon product page with human-like behavior (with timeout)
-    const amazonProduct = await Promise.race([
-      scrapeAmazonProduct(asin),
-      timeoutPromise
-    ]);
-    
-    // Record successful request
-    recordRequest();
+    // Scrape Amazon product using Apify
+    const amazonProduct = await scrapeAmazonProductWithApify(asin);
 
     // Calculate eBay price (25% discount by default)
     const discount = parseFloat(process.env.DEFAULT_PRICE_DISCOUNT || '0.25');
@@ -172,7 +117,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       asin, 
       productId: product.id,
       imageCount: imageRecords.length,
-      stats: getStats(),
     });
 
     return NextResponse.json({
@@ -184,41 +128,28 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     });
 
   } catch (error: any) {
-    // Record error for rate limiting
-    const statusCode = error.response?.status;
-    recordError(statusCode);
-    
     logger.error('Failed to process product', error, { 
-      statusCode,
       message: error.message,
-      stats: getStats(),
     });
+    
+    // Handle Apify-specific errors
+    if (error.message?.includes('Apify')) {
+      return NextResponse.json(
+        { success: false, error: `Apify error: ${error.message}` },
+        { status: 500 }
+      );
+    }
     
     // Handle timeout errors
     if (error.message?.includes('timeout') || error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
       return NextResponse.json(
-        { success: false, error: 'Amazon request timed out - Amazon may be blocking requests. Try again in a few minutes.' },
+        { success: false, error: 'Request timed out. Please try again.' },
         { status: 408 }
       );
     }
     
-    // Handle specific error codes
-    if (statusCode === 429 || statusCode === 503) {
-      return NextResponse.json(
-        { success: false, error: 'Amazon rate limit detected - please wait before trying again' },
-        { status: 429 }
-      );
-    }
-    
-    if (statusCode === 404) {
-      return NextResponse.json(
-        { success: false, error: 'Product not found on Amazon' },
-        { status: 404 }
-      );
-    }
-    
     return NextResponse.json(
-      { success: false, error: 'Failed to scrape Amazon product - Amazon may be blocking the request' },
+      { success: false, error: error.message || 'Failed to process Amazon product' },
       { status: 500 }
     );
   }
@@ -229,267 +160,177 @@ async function searchAmazonByIdentifier(
   identifierType: string
 ): Promise<string | null> {
   try {
-    // Simulate typing the search query
-    await addTypingDelay(identifier.length);
-    
-    // Brief pause before hitting "enter" (submit)
-    await simulateMouseMovement();
-    
-    // Search Amazon using the identifier - ONE TRY ONLY
-    let searchUrl = `https://www.amazon.com/s?k=${encodeURIComponent(identifier)}`;
-    
-    // Add cache busters and natural-looking parameters
-    searchUrl = addCacheBuster(searchUrl);
-    
-    logger.info('Searching Amazon with enhanced human-like behavior', { identifier, identifierType });
-    
-    // Get consistent headers for this session
-    const headers = getConsistentHeaders();
-    
-    const response = await axios.get(searchUrl, {
-      headers,
-      timeout: 15000, // 15 seconds
-      maxRedirects: 0,
-      validateStatus: (status) => status === 200,
-      signal: AbortSignal.timeout(20000), // Hard timeout at 20 seconds
-    });
-    
-    // Simulate looking at search results (brief reading)
-    await addReadingDelay('brief');
-    
-    // Simulate scrolling through results
-    await simulateScrolling(2);
+    // Initialize Apify client
+    const apifyToken = process.env.APIFY_API_TOKEN || process.env.APIFY_API_KEY;
+    if (!apifyToken) {
+      throw new Error('APIFY_API_TOKEN or APIFY_API_KEY is not configured');
+    }
 
-    const $ = cheerio.load(response.data);
+    const client = new ApifyClient({ token: apifyToken });
     
-    // Try to find ASIN from search results
-    // Method 1: From data-asin attribute in search results
-    const firstResult = $('[data-asin]').first();
-    let asin = firstResult.attr('data-asin');
+    // Search Amazon using the identifier
+    const searchUrl = `https://www.amazon.com/s?k=${encodeURIComponent(identifier)}`;
     
-    // Simulate user looking at the first result (micro-pause)
-    await simulateMouseMovement();
+    logger.info('Searching Amazon via Apify', { identifier, identifierType, searchUrl });
     
-    // Make sure it's a valid 10-character ASIN, not empty or "0000000000"
-    if (asin && asin.length === 10 && asin !== '0000000000' && !asin.startsWith('0')) {
-      logger.info('Found ASIN from search', { identifier, identifierType, asin });
-      
-      // Brief pause before clicking the result
-      const clickDelay = getHumanDelay('click');
-      await new Promise(resolve => setTimeout(resolve, clickDelay));
-      
+    // Use junglee/amazon-crawler for product search
+    const run = await client.actor('junglee/amazon-crawler').call({
+      startUrls: [{ url: searchUrl }],
+      maxItems: 1,
+      country: 'US',
+    });
+
+    // Fetch results from the run's dataset
+    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    
+    if (items.length === 0 || !items[0]) {
+      logger.warn('No search results from Apify', { identifier, identifierType });
+      return null;
+    }
+
+    // Extract ASIN from the result
+    const result = items[0] as any;
+    const asin = result.asin || result.ASIN;
+    
+    if (asin && typeof asin === 'string' && asin.length === 10) {
+      logger.info('Found ASIN from Apify search', { identifier, identifierType, asin });
       return asin;
     }
     
-    // Method 2: Extract from product link
-    const productLink = $('h2 a.a-link-normal').first().attr('href');
-    if (productLink) {
-      const asinMatch = productLink.match(/\/dp\/([A-Z0-9]{10})/);
-      if (asinMatch) {
-        asin = asinMatch[1];
-        logger.info('Found ASIN from product link', { identifier, identifierType, asin });
-        
-        // Brief pause before clicking the result
-        const clickDelay = getHumanDelay('click');
-        await new Promise(resolve => setTimeout(resolve, clickDelay));
-        
-        return asin;
-      }
-    }
-    
-    logger.warn('No valid ASIN found in search results', { identifier, identifierType });
+    logger.warn('No valid ASIN found in Apify results', { identifier, identifierType });
     return null;
     
   } catch (error) {
-    logger.error('Failed to search Amazon', error, { identifier, identifierType });
+    logger.error('Failed to search Amazon via Apify', error, { identifier, identifierType });
     return null;
   }
 }
 
-async function scrapeAmazonProduct(asin: string): Promise<AmazonProduct> {
-  let url = `https://www.amazon.com/dp/${asin}`;
-  
-  // Add cache busters to URL
-  url = addCacheBuster(url);
-
-  logger.info('Scraping product page with human-like interaction patterns', { asin });
-
-  // Get consistent headers that match current User-Agent
-  const headers = getConsistentHeaders();
-
-  const response = await axios.get(url, {
-    headers,
-    timeout: 15000, // 15 seconds
-    maxRedirects: 5,
-    validateStatus: (status) => status === 200,
-    signal: AbortSignal.timeout(20000), // Hard timeout at 20 seconds
-  });
-  
-  // Initial page load - brief scan of top content
-  await addReadingDelay('brief');
-  
-  // Simulate scrolling down to see more product details
-  await simulateScrolling(4);
-
-  const $ = cheerio.load(response.data);
-
-  // Extract title
-  const title = $('#productTitle').text().trim();
-
-  // Extract price
-  let price: number | undefined;
-  const priceWhole = $('.a-price .a-price-whole').first().text().replace(/[^0-9]/g, '');
-  const priceFraction = $('.a-price .a-price-fraction').first().text().replace(/[^0-9]/g, '');
-  if (priceWhole) {
-    price = parseFloat(`${priceWhole}.${priceFraction || '00'}`);
+async function scrapeAmazonProductWithApify(asin: string): Promise<AmazonProduct> {
+  const apifyToken = process.env.APIFY_API_TOKEN || process.env.APIFY_API_KEY;
+  if (!apifyToken) {
+    throw new Error('APIFY_API_TOKEN or APIFY_API_KEY is not configured. Please add it to your .env file.');
   }
 
-  // Helper function to clean and normalize image URLs to get full resolution
-  const cleanImageUrl = (url: string): string => {
-    if (!url) return '';
-    // Remove Amazon's size modifiers to get full resolution
-    // Patterns: ._SL500_.jpg, ._AC_SX425_.jpg, etc.
-    return url.replace(/\._[A-Z0-9_]+_\./g, '.').replace(/\._[A-Z0-9_]+\.(jpg|png|gif)/g, '.$1');
-  };
-  
-  // Helper to check if URL is a low-res thumbnail
-  const isLowResThumbnail = (url: string): boolean => {
-    // Thumbnails typically have _US40_, _SX38_, _SY50_ or similar small dimensions
-    return /\._[A-Z]{2,4}\d{2,3}_\./.test(url) || url.includes('_SS') || url.includes('_US40_');
-  };
+  const client = new ApifyClient({ token: apifyToken });
+  const productUrl = `https://www.amazon.com/dp/${asin}`;
 
-  // Extract images - Gets main product images only (not thumbnails)
-  const images: string[] = [];
-  const imageSet = new Set<string>();
+  logger.info('Scraping Amazon product via Apify', { asin, productUrl });
 
-  // Method 1: Look for colorImages/imageGalleryData in page scripts (BEST - high-res images)
-  // This is the primary source for full-resolution product images
-  $('script:not([src])').each((_, el) => {
-    const scriptContent = $(el).html() || '';
+  try {
+    // Run the Apify actor (junglee/amazon-crawler)
+    const run = await client.actor('junglee/amazon-crawler').call({
+      startUrls: [{ url: productUrl }],
+      maxItems: 1,
+      country: 'US',
+      scrapeProductDetail: true,
+    });
+
+    // Fetch results from the run's dataset
+    const { items } = await client.dataset(run.defaultDatasetId).listItems();
     
-    // Try to find colorImages or imageGalleryData
-    if (scriptContent.includes('colorImages') || scriptContent.includes('ImageBlockATF')) {
-      // Priority 1: Extract hiRes images (highest quality)
-      const hiResMatches = scriptContent.match(/"hiRes":"(https:\/\/[^"]+)"/g);
-      if (hiResMatches) {
-        hiResMatches.forEach(match => {
-          const urlMatch = match.match(/"hiRes":"([^"]+)"/);
-          if (urlMatch && urlMatch[1] !== 'null') {
-            const cleanUrl = cleanImageUrl(urlMatch[1]);
-            if (cleanUrl && !isLowResThumbnail(cleanUrl)) {
-              imageSet.add(cleanUrl);
-            }
-          }
-        });
-      }
-      
-      // Priority 2: Extract large images (if no hiRes found)
-      if (imageSet.size === 0) {
-        const largeMatches = scriptContent.match(/"large":"(https:\/\/[^"]+)"/g);
-        if (largeMatches) {
-          largeMatches.forEach(match => {
-            const urlMatch = match.match(/"large":"([^"]+)"/);
-            if (urlMatch && urlMatch[1] !== 'null') {
-              const cleanUrl = cleanImageUrl(urlMatch[1]);
-              if (cleanUrl && !isLowResThumbnail(cleanUrl)) {
-                imageSet.add(cleanUrl);
-              }
-            }
-          });
-        }
-      }
+    if (items.length === 0 || !items[0]) {
+      throw new Error(`No data returned from Apify for ASIN: ${asin}`);
     }
-  });
 
-  // Method 2: Extract from imageBlock data attribute (FALLBACK)
-  // Only use if Method 1 didn't find images
-  if (imageSet.size === 0) {
-    const imageBlockData = $('#imageBlock').attr('data-a-dynamic-image');
-    if (imageBlockData) {
-      try {
-        const imageObj = JSON.parse(imageBlockData);
-        Object.keys(imageObj).forEach(url => {
-          const cleanUrl = cleanImageUrl(url);
-          if (cleanUrl && !isLowResThumbnail(url)) {
-            imageSet.add(cleanUrl);
-          }
-        });
-        logger.debug('Extracted from imageBlock', { asin, count: imageSet.size });
-      } catch (e) {
-        logger.warn('Failed to parse imageBlock', { asin });
+    const apifyResult = items[0] as any;
+    
+    logger.info('Apify scraping complete', { 
+      asin, 
+      hasTitle: !!apifyResult.title,
+      hasPrice: !!apifyResult.price,
+      imageCount: apifyResult.images?.length || 0,
+    });
+
+    // Parse price - handle different formats from Apify
+    let price: number | undefined;
+    if (apifyResult.price) {
+      if (typeof apifyResult.price === 'number') {
+        price = apifyResult.price;
+      } else if (typeof apifyResult.price === 'string') {
+        // Remove currency symbols and parse
+        const priceStr = apifyResult.price.replace(/[^0-9.]/g, '');
+        price = parseFloat(priceStr);
+      } else if (apifyResult.price?.value !== undefined) {
+        price = parseFloat(apifyResult.price.value);
       }
     }
+
+    // Extract images - ensure we have an array of image URLs
+    const images: string[] = [];
+    if (Array.isArray(apifyResult.images)) {
+      images.push(...apifyResult.images.filter((img: any) => typeof img === 'string'));
+    } else if (apifyResult.images && typeof apifyResult.images === 'object') {
+      // Sometimes images come as an object with URLs as keys
+      images.push(...Object.keys(apifyResult.images));
+    } else if (apifyResult.mainImage && typeof apifyResult.mainImage === 'string') {
+      images.push(apifyResult.mainImage);
+    } else if (apifyResult.thumbnailImage && typeof apifyResult.thumbnailImage === 'string') {
+      images.push(apifyResult.thumbnailImage);
+    }
+
+    // Extract bullets/features
+    const bullets: string[] = [];
+    if (Array.isArray(apifyResult.features)) {
+      bullets.push(...apifyResult.features.filter((b: any) => typeof b === 'string'));
+    } else if (Array.isArray(apifyResult.bullets)) {
+      bullets.push(...apifyResult.bullets.filter((b: any) => typeof b === 'string'));
+    } else if (Array.isArray(apifyResult.featureBullets)) {
+      bullets.push(...apifyResult.featureBullets.filter((b: any) => typeof b === 'string'));
+    }
+
+    // Parse dimensions if available
+    let dimensions: AmazonProduct['dimensions'];
+    if (apifyResult.dimensions) {
+      const dim = apifyResult.dimensions;
+      if (dim.length && dim.width && dim.height) {
+        dimensions = {
+          length: parseFloat(dim.length),
+          width: parseFloat(dim.width),
+          height: parseFloat(dim.height),
+          unit: dim.unit?.toUpperCase() === 'CENTIMETER' ? 'CENTIMETER' : 'INCH',
+        };
+      }
+    }
+
+    // Parse weight if available
+    let weight: AmazonProduct['weight'];
+    if (apifyResult.weight) {
+      const w = apifyResult.weight;
+      if (w.value) {
+        weight = {
+          value: parseFloat(w.value),
+          unit: w.unit?.toUpperCase() === 'KILOGRAM' ? 'KILOGRAM' : 'POUND',
+        };
+      }
+    }
+
+    const amazonProduct: AmazonProduct = {
+      asin,
+      title: apifyResult.title || apifyResult.productTitle || apifyResult.name || '',
+      price,
+      images,
+      description: apifyResult.description || apifyResult.productDescription || '',
+      bullets,
+      brand: apifyResult.brand || apifyResult.manufacturer || apifyResult.brandName || undefined,
+      upc: apifyResult.upc || apifyResult.ean || undefined,
+      dimensions,
+      weight,
+    };
+
+    logger.info('Mapped Apify result to AmazonProduct', { 
+      asin, 
+      title: amazonProduct.title.substring(0, 50),
+      price: amazonProduct.price,
+      imageCount: amazonProduct.images.length,
+    });
+
+    return amazonProduct;
+    
+  } catch (error: any) {
+    logger.error('Failed to scrape via Apify', error, { asin });
+    throw new Error(`Apify scraping failed: ${error.message}`);
   }
-
-  // Method 3: Main product image as last resort fallback
-  if (imageSet.size === 0) {
-    const mainImage = $('#landingImage').attr('src') || 
-                     $('#imgBlkFront').attr('src') ||
-                     $('img[data-old-hires]').attr('data-old-hires');
-    if (mainImage && !isLowResThumbnail(mainImage)) {
-      const cleanUrl = cleanImageUrl(mainImage);
-      if (cleanUrl) imageSet.add(cleanUrl);
-    }
-  }
-
-  // Convert Set to Array (URLs are already cleaned and deduplicated)
-  images.push(...Array.from(imageSet));
-
-  logger.info('Image extraction complete', { 
-    asin, 
-    totalFound: images.length,
-    uniqueImages: imageSet.size,
-    source: imageSet.size > 0 ? 'scripts or imageBlock' : 'fallback'
-  });
-
-  // Simulate reading bullets (people read these carefully)
-  await addReadingDelay('normal');
-  
-  // Extract bullets
-  const bullets: string[] = [];
-  $('#feature-bullets ul li span.a-list-item').each((_, el) => {
-    const text = $(el).text().trim();
-    if (text) bullets.push(text);
-  });
-
-  // Extract brand
-  const brand = $('#bylineInfo').text().replace(/^Brand:\s*/i, '').trim() ||
-    $('tr.po-brand td.a-span9').text().trim();
-
-  // Extract description
-  const description = $('#productDescription p').text().trim() ||
-    $('#feature-bullets').text().trim().substring(0, 500);
-
-  // Extract UPC (simulate scrolling to product details section)
-  const scrollDelay = getHumanDelay('scroll');
-  await new Promise(resolve => setTimeout(resolve, scrollDelay));
-  
-  let upc: string | undefined;
-  $('tr').each((_, el) => {
-    const label = $(el).find('th').text().trim();
-    if (label.includes('UPC') || label.includes('EAN')) {
-      upc = $(el).find('td').text().trim();
-    }
-  });
-
-  logger.info('Scraped Amazon product', { 
-    asin, 
-    title: title.substring(0, 50),
-    price,
-    imageCount: images.length,
-    imageUrls: images 
-  });
-
-  return {
-    asin,
-    title,
-    price,
-    images,
-    description,
-    bullets,
-    brand,
-    upc,
-  };
 }
 
 async function uploadImagesToSupabase(
@@ -499,7 +340,7 @@ async function uploadImagesToSupabase(
 ): Promise<any[]> {
   const imageRecords = [];
   
-  logger.info('Starting human-like image loading', { 
+  logger.info('Starting image upload', { 
     asin, 
     totalImages: imageUrls.length,
     willUpload: Math.min(imageUrls.length, 12)
@@ -509,26 +350,16 @@ async function uploadImagesToSupabase(
     try {
       const imageUrl = imageUrls[i];
       
-      // Add realistic delay between image loads (humans don't load all at once)
-      await addImageLoadDelay(i, Math.min(imageUrls.length, 12));
+      logger.debug(`Downloading image ${i + 1}`, { asin, imageUrl });
       
-      logger.debug(`Downloading image ${i + 1} with human-like timing`, { asin, imageUrl });
-      
-      // Simulate hovering over thumbnail before loading
-      if (i > 0) {
-        await simulateMouseMovement();
-      }
-      
-      // Download image - ONE TRY ONLY with consistent headers
-      const headers = getConsistentHeaders();
-      
+      // Download image from URL
       const response = await axios.get(imageUrl, {
         responseType: 'arraybuffer',
         timeout: 8000,
         maxRedirects: 3,
         validateStatus: (status) => status === 200,
         headers: {
-          'User-Agent': headers['User-Agent'],
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
           'Referer': 'https://www.amazon.com/',
         },

@@ -24,6 +24,9 @@ export default function HomePage() {
   const [csvProgress, setCsvProgress] = useState({ current: 0, total: 0, successful: 0, failed: 0, skipped: 0 });
   const [csvLog, setCsvLog] = useState<CsvLogEntry[]>([]);
   const [csvDragOver, setCsvDragOver] = useState(false);
+  const [csvCurrentItem, setCsvCurrentItem] = useState<{ code: string; type: string; startedAt: number } | null>(null);
+  const [csvElapsed, setCsvElapsed] = useState(0);
+  const [csvWaiting, setCsvWaiting] = useState(false);
   const csvCancelRef = useRef(false);
   const csvFileInputRef = useRef<HTMLInputElement>(null);
   const csvLogEndRef = useRef<HTMLDivElement>(null);
@@ -302,6 +305,13 @@ export default function HomePage() {
     csvLogEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [csvLog]);
 
+  // Live elapsed timer for current scrape
+  useEffect(() => {
+    if (!csvCurrentItem) { setCsvElapsed(0); return; }
+    const id = setInterval(() => setCsvElapsed(Math.floor((Date.now() - csvCurrentItem.startedAt) / 1000)), 500);
+    return () => clearInterval(id);
+  }, [csvCurrentItem]);
+
   const parseCsvFile = (file: File) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -369,6 +379,8 @@ export default function HomePage() {
     csvCancelRef.current = false;
     setCsvProcessing(true);
     setCsvLog([]);
+    setCsvCurrentItem(null);
+    setCsvWaiting(false);
     const progress = { current: 0, total: csvItems.length, successful: 0, failed: 0, skipped: 0 };
     setCsvProgress({ ...progress });
 
@@ -382,14 +394,15 @@ export default function HomePage() {
       const identified = identifyProductCode(item);
 
       if (!identified) {
-        setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] Skipped — unrecognized: ${item}`, type: 'skip' }]);
         progress.skipped++;
         progress.current = i + 1;
         setCsvProgress({ ...progress });
+        setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] Skipped — unrecognized: ${item.substring(0, 60)}`, type: 'skip' }]);
         continue;
       }
 
-      setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] Processing ${identified.type}: ${identified.code}…`, type: 'info' }]);
+      // Show live "currently scraping" status
+      setCsvCurrentItem({ code: identified.code, type: identified.type, startedAt: Date.now() });
 
       try {
         const controller = new AbortController();
@@ -407,34 +420,39 @@ export default function HomePage() {
 
         if (result.success) {
           progress.successful++;
-          const title = result.data?.product?.title?.substring(0, 60) || identified.code;
-          setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] ✓ Added: ${title}`, type: 'success' }]);
+          const title = result.data?.product?.title?.substring(0, 70) || identified.code;
+          setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] ✓ ${title}`, type: 'success' }]);
         } else if (response.status === 409) {
           progress.skipped++;
           setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] — Already exists: ${identified.code}`, type: 'skip' }]);
         } else if (response.status === 404) {
           progress.failed++;
-          setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] ✗ Not found: ${identified.code}`, type: 'error' }]);
+          setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] ✗ Not found on Amazon: ${identified.code}`, type: 'error' }]);
         } else {
           progress.failed++;
           setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] ✗ Failed: ${result.error || identified.code}`, type: 'error' }]);
         }
       } catch (err: any) {
         progress.failed++;
-        const msg = err.name === 'AbortError' ? 'Timed out after 90s' : err.message;
+        const msg = err.name === 'AbortError' ? 'timed out after 90s' : err.message;
         setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] ✗ Error (${msg}): ${identified.code}`, type: 'error' }]);
       }
 
+      setCsvCurrentItem(null);
       progress.current = i + 1;
       setCsvProgress({ ...progress });
 
-      // 3s breathing room between requests; skip delay on last item or if cancelled
+      // 3s cooldown between requests
       if (i < csvItems.length - 1 && !csvCancelRef.current) {
+        setCsvWaiting(true);
         await new Promise(res => setTimeout(res, 3000));
+        setCsvWaiting(false);
       }
     }
 
     setCsvProcessing(false);
+    setCsvCurrentItem(null);
+    setCsvWaiting(false);
     toast.success(`Done — ${progress.successful} added, ${progress.skipped} skipped, ${progress.failed} failed`);
   };
 
@@ -659,26 +677,69 @@ export default function HomePage() {
             {/* Progress bar */}
             {(csvProcessing || csvProgress.current > 0) && csvProgress.total > 0 && (
               <div className="mt-4 space-y-2">
-                <div className="flex justify-between text-xs text-gray-500">
-                  <span>{csvProgress.current} / {csvProgress.total}</span>
-                  <span className="space-x-3">
-                    <span className="text-emerald-600">{csvProgress.successful} added</span>
+                <div className="flex justify-between items-center text-xs">
+                  <span className="font-semibold text-gray-700">
+                    {csvProgress.current} / {csvProgress.total}
+                    <span className="ml-1 text-gray-400 font-normal">
+                      ({Math.round((csvProgress.current / csvProgress.total) * 100)}%)
+                    </span>
+                  </span>
+                  <span className="flex items-center gap-3">
+                    <span className="text-emerald-600 font-medium">{csvProgress.successful} added</span>
                     <span className="text-yellow-600">{csvProgress.skipped} skipped</span>
                     <span className="text-red-500">{csvProgress.failed} failed</span>
                   </span>
                 </div>
-                <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                <div className="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
                   <div
-                    className="h-2 rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all duration-500"
-                    style={{ width: `${Math.round((csvProgress.current / csvProgress.total) * 100)}%` }}
+                    className={`h-2.5 rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all duration-500 ${csvProcessing ? 'relative' : ''}`}
+                    style={{ width: `${Math.max(2, Math.round((csvProgress.current / csvProgress.total) * 100))}%` }}
                   />
                 </div>
               </div>
             )}
 
-            {/* Log */}
+            {/* Live current-item status */}
+            {csvProcessing && (
+              <div className={`mt-3 rounded-xl px-4 py-3 flex items-center gap-3 text-sm ${
+                csvWaiting ? 'bg-gray-100 text-gray-500' : 'bg-blue-50 text-blue-700'
+              }`}>
+                {csvWaiting ? (
+                  <>
+                    <svg className="w-4 h-4 flex-shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span>Cooling down 3s before next item…</span>
+                  </>
+                ) : csvCurrentItem ? (
+                  <>
+                    <svg className="w-4 h-4 flex-shrink-0 animate-spin text-blue-500" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    <span className="flex-1 min-w-0">
+                      Scraping <span className="font-mono font-semibold">{csvCurrentItem.code}</span>
+                      <span className="ml-1 text-blue-400">({csvCurrentItem.type})</span>
+                    </span>
+                    <span className="flex-shrink-0 tabular-nums text-blue-400 text-xs font-mono">
+                      {csvElapsed}s
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4 flex-shrink-0 animate-spin text-blue-500" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    <span>Starting…</span>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Log — completed items only */}
             {csvLog.length > 0 && (
-              <div className="mt-4 bg-gray-950 rounded-xl p-4 max-h-56 overflow-y-auto font-mono text-xs space-y-0.5">
+              <div className="mt-3 bg-gray-950 rounded-xl p-4 max-h-56 overflow-y-auto font-mono text-xs space-y-0.5">
                 {csvLog.map((entry, idx) => (
                   <div
                     key={idx}
@@ -686,7 +747,7 @@ export default function HomePage() {
                       entry.type === 'success' ? 'text-emerald-400' :
                       entry.type === 'error'   ? 'text-red-400' :
                       entry.type === 'skip'    ? 'text-yellow-400' :
-                                                  'text-gray-400'
+                                                  'text-gray-500'
                     }
                   >
                     {entry.text}
@@ -701,9 +762,17 @@ export default function HomePage() {
               {csvProcessing ? (
                 <button
                   onClick={() => { csvCancelRef.current = true; }}
-                  className="w-full py-3 rounded-xl font-semibold text-sm bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 transition-colors"
+                  className="w-full py-3 rounded-xl font-semibold text-sm bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 transition-colors flex items-center justify-center gap-2"
                 >
-                  Cancel Import
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                  Stop Import
+                  {csvProgress.total > 0 && (
+                    <span className="ml-1 opacity-70 font-normal">
+                      ({csvProgress.current}/{csvProgress.total})
+                    </span>
+                  )}
                 </button>
               ) : (
                 <button

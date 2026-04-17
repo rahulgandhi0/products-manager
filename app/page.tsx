@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { Html5Qrcode } from 'html5-qrcode';
 import { toast } from 'sonner';
 
+type CsvLogEntry = { text: string; type: 'success' | 'error' | 'skip' | 'info' };
+
 export default function HomePage() {
   const router = useRouter();
   const [inputs, setInputs] = useState<string[]>(['']);
@@ -14,6 +16,17 @@ export default function HomePage() {
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const [isScannerReady, setIsScannerReady] = useState(false);
   const isProcessingRef = useRef(false);
+
+  // CSV import state
+  const [csvItems, setCsvItems] = useState<string[]>([]);
+  const [csvFileName, setCsvFileName] = useState('');
+  const [csvProcessing, setCsvProcessing] = useState(false);
+  const [csvProgress, setCsvProgress] = useState({ current: 0, total: 0, successful: 0, failed: 0, skipped: 0 });
+  const [csvLog, setCsvLog] = useState<CsvLogEntry[]>([]);
+  const [csvDragOver, setCsvDragOver] = useState(false);
+  const csvCancelRef = useRef(false);
+  const csvFileInputRef = useRef<HTMLInputElement>(null);
+  const csvLogEndRef = useRef<HTMLDivElement>(null);
 
   const identifyProductCode = (input: string): { type: string; code: string } | null => {
     const trimmed = input.trim();
@@ -284,6 +297,147 @@ export default function HomePage() {
     }
   };
 
+  // Auto-scroll CSV log to bottom
+  useEffect(() => {
+    csvLogEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [csvLog]);
+
+  const parseCsvFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      if (lines.length === 0) {
+        toast.error('CSV file is empty');
+        return;
+      }
+
+      // Find the column index that holds links/URLs/ASINs
+      const headerCols = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/^"|"$/g, ''));
+      const linkIdx = headerCols.findIndex(h =>
+        h === 'link' || h === 'url' || h === 'asin' || h.includes('url') || h.includes('link')
+      );
+
+      let items: string[];
+      if (linkIdx >= 0) {
+        items = lines.slice(1).map(line => {
+          const cols = line.split(',');
+          return (cols[linkIdx] ?? '').trim().replace(/^"|"$/g, '');
+        }).filter(Boolean);
+      } else {
+        // No recognised header — treat first column of every non-header line as the value
+        items = lines
+          .map(line => line.split(',')[0].trim().replace(/^"|"$/g, ''))
+          .filter(item => item && identifyProductCode(item));
+      }
+
+      if (items.length === 0) {
+        toast.error('No valid items found in CSV');
+        return;
+      }
+
+      setCsvItems(items);
+      setCsvFileName(file.name);
+      setCsvLog([]);
+      setCsvProgress({ current: 0, total: items.length, successful: 0, failed: 0, skipped: 0 });
+      toast.success(`Loaded ${items.length} item${items.length !== 1 ? 's' : ''} from CSV`);
+    };
+    reader.onerror = () => toast.error('Failed to read file');
+    reader.readAsText(file);
+  };
+
+  const handleCsvFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) parseCsvFile(file);
+    e.target.value = '';
+  };
+
+  const handleCsvDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setCsvDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file && (file.name.endsWith('.csv') || file.type === 'text/csv')) {
+      parseCsvFile(file);
+    } else {
+      toast.error('Please drop a .csv file');
+    }
+  };
+
+  const handleCsvImport = async () => {
+    if (csvItems.length === 0) return;
+
+    csvCancelRef.current = false;
+    setCsvProcessing(true);
+    setCsvLog([]);
+    const progress = { current: 0, total: csvItems.length, successful: 0, failed: 0, skipped: 0 };
+    setCsvProgress({ ...progress });
+
+    for (let i = 0; i < csvItems.length; i++) {
+      if (csvCancelRef.current) {
+        setCsvLog(prev => [...prev, { text: 'Import cancelled.', type: 'info' }]);
+        break;
+      }
+
+      const item = csvItems[i];
+      const identified = identifyProductCode(item);
+
+      if (!identified) {
+        setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] Skipped — unrecognized: ${item}`, type: 'skip' }]);
+        progress.skipped++;
+        progress.current = i + 1;
+        setCsvProgress({ ...progress });
+        continue;
+      }
+
+      setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] Processing ${identified.type}: ${identified.code}…`, type: 'info' }]);
+
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 90000);
+
+        const response = await fetch('/api/scrape-amazon', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ identifier: identified.code, identifierType: identified.type }),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+        const result = await response.json();
+
+        if (result.success) {
+          progress.successful++;
+          const title = result.data?.product?.title?.substring(0, 60) || identified.code;
+          setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] ✓ Added: ${title}`, type: 'success' }]);
+        } else if (response.status === 409) {
+          progress.skipped++;
+          setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] — Already exists: ${identified.code}`, type: 'skip' }]);
+        } else if (response.status === 404) {
+          progress.failed++;
+          setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] ✗ Not found: ${identified.code}`, type: 'error' }]);
+        } else {
+          progress.failed++;
+          setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] ✗ Failed: ${result.error || identified.code}`, type: 'error' }]);
+        }
+      } catch (err: any) {
+        progress.failed++;
+        const msg = err.name === 'AbortError' ? 'Timed out after 90s' : err.message;
+        setCsvLog(prev => [...prev, { text: `[${i + 1}/${csvItems.length}] ✗ Error (${msg}): ${identified.code}`, type: 'error' }]);
+      }
+
+      progress.current = i + 1;
+      setCsvProgress({ ...progress });
+
+      // 3s breathing room between requests; skip delay on last item or if cancelled
+      if (i < csvItems.length - 1 && !csvCancelRef.current) {
+        await new Promise(res => setTimeout(res, 3000));
+      }
+    }
+
+    setCsvProcessing(false);
+    toast.success(`Done — ${progress.successful} added, ${progress.skipped} skipped, ${progress.failed} failed`);
+  };
+
   return (
     <div className="min-h-screen flex flex-col">
       {/* Modern Header */}
@@ -452,6 +606,126 @@ export default function HomePage() {
               </div>
             )}
           </div>
+
+          {/* CSV Import Section */}
+          <div className="card p-6 sm:p-8 mt-6">
+            <div className="flex items-center space-x-2 mb-5">
+              <div className="w-7 h-7 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-lg flex items-center justify-center flex-shrink-0">
+                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900">CSV Import</h3>
+              <span className="text-xs text-gray-400 ml-1">— bulk scrape from file, no limit</span>
+            </div>
+
+            {/* Drop zone */}
+            <div
+              className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer ${
+                csvDragOver
+                  ? 'border-emerald-400 bg-emerald-50'
+                  : 'border-gray-300 hover:border-emerald-400 hover:bg-gray-50'
+              }`}
+              onClick={() => !csvProcessing && csvFileInputRef.current?.click()}
+              onDragOver={e => { e.preventDefault(); setCsvDragOver(true); }}
+              onDragLeave={() => setCsvDragOver(false)}
+              onDrop={handleCsvDrop}
+            >
+              <input
+                ref={csvFileInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                className="hidden"
+                onChange={handleCsvFileInput}
+                disabled={csvProcessing}
+              />
+              {csvFileName ? (
+                <div className="space-y-1">
+                  <p className="font-medium text-gray-800 text-sm">{csvFileName}</p>
+                  <p className="text-emerald-600 font-semibold">{csvItems.length} items loaded</p>
+                  <p className="text-xs text-gray-400">Click or drop to replace</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <svg className="w-10 h-10 mx-auto text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
+                  <p className="text-sm text-gray-500">Drop a <span className="font-medium">.csv</span> file here or click to browse</p>
+                  <p className="text-xs text-gray-400">Expects a <code className="bg-gray-100 px-1 rounded">Link</code> column with Amazon URLs or ASINs</p>
+                </div>
+              )}
+            </div>
+
+            {/* Progress bar */}
+            {(csvProcessing || csvProgress.current > 0) && csvProgress.total > 0 && (
+              <div className="mt-4 space-y-2">
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>{csvProgress.current} / {csvProgress.total}</span>
+                  <span className="space-x-3">
+                    <span className="text-emerald-600">{csvProgress.successful} added</span>
+                    <span className="text-yellow-600">{csvProgress.skipped} skipped</span>
+                    <span className="text-red-500">{csvProgress.failed} failed</span>
+                  </span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                  <div
+                    className="h-2 rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all duration-500"
+                    style={{ width: `${Math.round((csvProgress.current / csvProgress.total) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Log */}
+            {csvLog.length > 0 && (
+              <div className="mt-4 bg-gray-950 rounded-xl p-4 max-h-56 overflow-y-auto font-mono text-xs space-y-0.5">
+                {csvLog.map((entry, idx) => (
+                  <div
+                    key={idx}
+                    className={
+                      entry.type === 'success' ? 'text-emerald-400' :
+                      entry.type === 'error'   ? 'text-red-400' :
+                      entry.type === 'skip'    ? 'text-yellow-400' :
+                                                  'text-gray-400'
+                    }
+                  >
+                    {entry.text}
+                  </div>
+                ))}
+                <div ref={csvLogEndRef} />
+              </div>
+            )}
+
+            {/* Action button */}
+            <div className="mt-4">
+              {csvProcessing ? (
+                <button
+                  onClick={() => { csvCancelRef.current = true; }}
+                  className="w-full py-3 rounded-xl font-semibold text-sm bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 transition-colors"
+                >
+                  Cancel Import
+                </button>
+              ) : (
+                <button
+                  onClick={handleCsvImport}
+                  disabled={csvItems.length === 0}
+                  className="w-full btn-primary py-3 text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <span className="flex items-center justify-center space-x-2">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                    <span>
+                      {csvItems.length > 0
+                        ? `Start Import (${csvItems.length} item${csvItems.length !== 1 ? 's' : ''})`
+                        : 'Upload a CSV first'}
+                    </span>
+                  </span>
+                </button>
+              )}
+            </div>
+          </div>
+
         </div>
       </main>
     </div>

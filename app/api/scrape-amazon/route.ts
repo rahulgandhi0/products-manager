@@ -5,6 +5,8 @@ import { supabaseAdmin } from '@/lib/supabase';
 import { AmazonProduct } from '@/lib/types';
 import Logger from '@/lib/logger';
 
+export const maxDuration = 60; // seconds — needed for Apify actor runs on Vercel
+
 const logger = new Logger('API_SCRAPE_AMAZON');
 
 // Debug mode - set to true for verbose logging

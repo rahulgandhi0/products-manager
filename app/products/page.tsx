@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Product, StatusFilter } from '@/lib/types';
 import { formatPrice } from '@/utils/format';
@@ -14,20 +14,42 @@ export default function AllProductsPage(): JSX.Element {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
+  const [searchInput, setSearchInput] = useState('');
+  const [debouncedTitleQuery, setDebouncedTitleQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<Partial<Product>>({});
 
   useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setDebouncedTitleQuery(searchInput.trim());
+    }, 180);
+    return () => window.clearTimeout(handle);
+  }, [searchInput]);
+
+  const trimmedSearchInput = searchInput.trim();
+  const isSearchPending = trimmedSearchInput !== debouncedTitleQuery;
+  const isSearchActive = debouncedTitleQuery.length > 0;
+
+  useLayoutEffect(() => {
+    setPage(1);
+  }, [debouncedTitleQuery]);
+
+  useEffect(() => {
     fetchProducts();
-  }, [page, statusFilter]);
+  }, [page, statusFilter, debouncedTitleQuery]);
 
   const fetchProducts = async (): Promise<void> => {
     setLoading(true);
     try {
-      const response = await fetch(
-        `/api/products?page=${page}&status=${statusFilter}`
-      );
+      const params = new URLSearchParams({
+        page: String(page),
+        status: statusFilter,
+      });
+      if (debouncedTitleQuery.length > 0) {
+        params.set('q', debouncedTitleQuery);
+      }
+      const response = await fetch(`/api/products?${params.toString()}`);
       const result = await response.json();
 
       if (result.success) {
@@ -319,8 +341,115 @@ export default function AllProductsPage(): JSX.Element {
       {/* Main Content */}
       <main className="flex-1 p-4 sm:p-6 lg:p-8">
         <div className="max-w-7xl mx-auto">
+          <section
+            className="card p-4 sm:p-5 mb-6 border border-white/60 shadow-lg shadow-indigo-950/5"
+            aria-label="Search and filters"
+          >
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:gap-6">
+              <div className="min-w-0 flex-1 lg:max-w-2xl">
+                <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <label
+                    htmlFor="product-search"
+                    className="text-sm font-semibold tracking-tight text-gray-800"
+                  >
+                    Search by title
+                  </label>
+                  {isSearchPending && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700 ring-1 ring-indigo-100">
+                      <span
+                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-500 motion-safe:animate-pulse"
+                        aria-hidden="true"
+                      />
+                      Typing…
+                    </span>
+                  )}
+                </div>
+                <div className="relative">
+                  <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5 text-indigo-500/80">
+                    <svg
+                      className={`h-5 w-5 ${isSearchPending ? 'motion-safe:opacity-60' : ''}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                      />
+                    </svg>
+                  </span>
+                  <input
+                    id="product-search"
+                    type="search"
+                    autoComplete="off"
+                    placeholder="Type any part of a product title…"
+                    value={searchInput}
+                    onChange={(e) => setSearchInput(e.target.value)}
+                    className="w-full rounded-xl border-2 border-gray-200/90 bg-white/90 py-3 pl-11 pr-11 text-[15px] text-gray-900 shadow-sm outline-none ring-0 transition-[border-color,box-shadow,background-color] duration-150 ease-out placeholder:text-gray-400 focus:border-indigo-400 focus:bg-white focus:shadow-md focus:shadow-indigo-500/10 focus:ring-2 focus:ring-indigo-500/25"
+                  />
+                  {searchInput.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchInput('')}
+                      className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 transition-colors duration-150 hover:text-gray-700 focus:outline-none focus-visible:text-indigo-600"
+                      aria-label="Clear search"
+                    >
+                      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M6 18L18 6M6 6l12 12"
+                        />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+                <p className="mt-2.5 text-xs leading-relaxed text-gray-500">
+                  Partial, case-insensitive match. With text in the box, results include{' '}
+                  <span className="font-medium text-gray-600">every status</span>
+                  . Clear the field to use the status tabs only.
+                </p>
+              </div>
+              {isSearchActive && (
+                <div className="flex shrink-0 lg:pt-7">
+                  <div className="flex items-center gap-2 rounded-xl border border-indigo-100 bg-gradient-to-br from-indigo-50 to-white px-3.5 py-2.5 text-xs text-indigo-950 shadow-sm ring-1 ring-indigo-100/80">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-600/10 text-indigo-700">
+                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
+                        />
+                      </svg>
+                    </span>
+                    <div>
+                      <p className="font-semibold text-indigo-900">All statuses</p>
+                      <p className="mt-0.5 text-[11px] font-normal text-indigo-800/85">
+                        Tabs below are visual only until you clear search.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+
           {/* Status Filter Pills */}
-          <div className="flex flex-wrap gap-2 mb-6">
+          <div
+            className={`mb-6 flex flex-wrap gap-2 transition-opacity duration-200 ease-out ${
+              isSearchActive ? 'opacity-70' : 'opacity-100'
+            }`}
+            title={
+              isSearchActive
+                ? 'Status filters apply after you clear the search box'
+                : undefined
+            }
+          >
             {(['ALL', 'INACTIVE', 'POSTED', 'AGED', 'SOLD'] as StatusFilter[]).map((status) => (
               <button
                 key={status}

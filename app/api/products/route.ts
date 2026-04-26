@@ -12,8 +12,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const limit = 50;
     const offset = (page - 1) * limit;
     const status = searchParams.get('status') || 'ALL';
+    const titleQuery = (searchParams.get('q') || '').trim();
 
-    logger.info('Fetching products', { page, status });
+    logger.info('Fetching products', { page, status, titleQuery: titleQuery || undefined });
 
     let query = supabaseAdmin
       .from('products')
@@ -24,7 +25,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
-    if (status === 'AGED') {
+    if (titleQuery.length > 0) {
+      query = query.ilike('title', `%${titleQuery}%`);
+    } else if (status === 'AGED') {
       // Products that are currently POSTED and posted_at is more than 30 days ago
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);

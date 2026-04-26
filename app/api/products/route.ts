@@ -25,9 +25,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
-    if (titleQuery.length > 0) {
-      query = query.ilike('title', `%${titleQuery}%`);
-    } else if (status === 'AGED') {
+    if (status === 'AGED') {
       // Products that are currently POSTED and posted_at is more than 30 days ago
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -37,6 +35,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         .lt('posted_at', thirtyDaysAgo.toISOString());
     } else if (status !== 'ALL') {
       query = query.eq('status', status);
+    }
+
+    if (titleQuery.length > 0) {
+      query = query.ilike('title', `%${titleQuery}%`);
     }
 
     const { data, error, count } = await query;

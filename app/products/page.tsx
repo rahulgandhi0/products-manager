@@ -72,7 +72,9 @@ export default function AllProductsPage(): JSX.Element {
       if (debouncedTitleQuery.length > 0) {
         params.set('q', debouncedTitleQuery);
       }
-      const response = await fetch(`/api/products?${params.toString()}`);
+      const response = await fetch(`/api/products?${params.toString()}`, {
+        cache: 'no-store',
+      });
       const result = await response.json();
 
       if (result.success) {
@@ -128,7 +130,9 @@ export default function AllProductsPage(): JSX.Element {
         setSelectedIds(new Set());
         fetchProducts();
       } else {
-        toast.error('Bulk update failed');
+        toast.error(
+          typeof result.error === 'string' ? result.error : 'Bulk update failed'
+        );
       }
     } catch (error) {
       console.error('[PRODUCTS_BULK_UPDATE_ERROR]', error);
@@ -307,6 +311,10 @@ export default function AllProductsPage(): JSX.Element {
       if (result.success) {
         toast.success(`Status updated to ${status}`);
         fetchProducts();
+      } else {
+        toast.error(
+          typeof result.error === 'string' ? result.error : 'Failed to update status'
+        );
       }
     } catch (error) {
       console.error('[STATUS_UPDATE_ERROR]', error);
@@ -632,6 +640,8 @@ export default function AllProductsPage(): JSX.Element {
                           <div className="flex flex-col gap-1">
                             <select
                               value={product.status}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => e.stopPropagation()}
                               onChange={(e) =>
                                 updateStatus(product.id, e.target.value as ProductStatus)
                               }

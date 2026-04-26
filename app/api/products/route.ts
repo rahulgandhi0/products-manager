@@ -4,6 +4,8 @@ import Logger from '@/lib/logger';
 
 const logger = new Logger('API_PRODUCTS');
 
+export const dynamic = 'force-dynamic';
+
 // GET - Fetch products with pagination and filtering
 export async function GET(req: NextRequest): Promise<NextResponse> {
   try {
@@ -100,12 +102,16 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
 
     return NextResponse.json({ success: true, data });
 
-  } catch (error) {
+  } catch (error: unknown) {
     logger.error('Failed to update product', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to update product' },
-      { status: 500 }
-    );
+    const message =
+      error &&
+      typeof error === 'object' &&
+      'message' in error &&
+      typeof (error as { message: unknown }).message === 'string'
+        ? (error as { message: string }).message
+        : 'Failed to update product';
+    return NextResponse.json({ success: false, error: message }, { status: 500 });
   }
 }
 

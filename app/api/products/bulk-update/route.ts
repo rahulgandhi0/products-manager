@@ -29,12 +29,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       message: `Updated ${ids.length} products` 
     });
 
-  } catch (error) {
+  } catch (error: unknown) {
     logger.error('Bulk update failed', error);
-    return NextResponse.json(
-      { success: false, error: 'Bulk update failed' },
-      { status: 500 }
-    );
+    const message =
+      error &&
+      typeof error === 'object' &&
+      'message' in error &&
+      typeof (error as { message: unknown }).message === 'string'
+        ? (error as { message: string }).message
+        : 'Bulk update failed';
+    return NextResponse.json({ success: false, error: message }, { status: 500 });
   }
 }
 

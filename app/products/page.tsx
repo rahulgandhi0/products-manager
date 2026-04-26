@@ -2,10 +2,37 @@
 
 import { useEffect, useLayoutEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Product, StatusFilter } from '@/lib/types';
+import { Product, ProductStatus, StatusFilter } from '@/lib/types';
 import { formatPrice } from '@/utils/format';
 import { toast } from 'sonner';
 import Image from 'next/image';
+
+function statusPillLabel(status: StatusFilter): string {
+  if (status === 'AGED') return 'Aged';
+  if (status === 'BLOCKED') return 'Blocked';
+  return status;
+}
+
+function statusPillClass(status: StatusFilter, selected: boolean): string {
+  const base =
+    'px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200 ';
+  if (selected) {
+    if (status === 'AGED') {
+      return `${base}bg-gradient-to-r from-orange-600 to-red-600 text-white shadow-lg scale-105`;
+    }
+    if (status === 'BLOCKED') {
+      return `${base}bg-gradient-to-r from-rose-700 to-red-800 text-white shadow-lg scale-105`;
+    }
+    return `${base}bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg scale-105`;
+  }
+  if (status === 'AGED') {
+    return `${base}bg-white text-orange-700 hover:bg-orange-50 border border-orange-200 hover:border-orange-300`;
+  }
+  if (status === 'BLOCKED') {
+    return `${base}bg-white text-rose-800 hover:bg-rose-50 border border-rose-200 hover:border-rose-300`;
+  }
+  return `${base}bg-white text-gray-700 hover:bg-gray-50 border border-gray-200 hover:border-gray-300`;
+}
 
 export default function AllProductsPage(): JSX.Element {
   const router = useRouter();
@@ -78,7 +105,7 @@ export default function AllProductsPage(): JSX.Element {
     }
   };
 
-  const handleBulkStatusUpdate = async (status: 'POSTED' | 'SOLD' | 'INACTIVE'): Promise<void> => {
+  const handleBulkStatusUpdate = async (status: ProductStatus): Promise<void> => {
     if (selectedIds.size === 0) {
       toast.error('No products selected');
       return;
@@ -267,7 +294,7 @@ export default function AllProductsPage(): JSX.Element {
     return diffDays;
   };
 
-  const updateStatus = async (id: string, status: 'POSTED' | 'SOLD' | 'INACTIVE'): Promise<void> => {
+  const updateStatus = async (id: string, status: ProductStatus): Promise<void> => {
     try {
       const response = await fetch('/api/products', {
         method: 'PATCH',
@@ -339,24 +366,18 @@ export default function AllProductsPage(): JSX.Element {
         <div className="max-w-7xl mx-auto">
           {/* Status Filter Pills */}
           <div className="mb-4 flex flex-wrap gap-2">
-            {(['ALL', 'INACTIVE', 'POSTED', 'AGED', 'SOLD'] as StatusFilter[]).map((status) => (
+            {(
+              ['ALL', 'INACTIVE', 'POSTED', 'AGED', 'SOLD', 'BLOCKED'] as StatusFilter[]
+            ).map((status) => (
               <button
                 key={status}
                 onClick={() => {
                   setStatusFilter(status);
                   setPage(1);
                 }}
-                className={`px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200 ${
-                  statusFilter === status
-                    ? status === 'AGED'
-                      ? 'bg-gradient-to-r from-orange-600 to-red-600 text-white shadow-lg scale-105'
-                      : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg scale-105'
-                    : status === 'AGED'
-                    ? 'bg-white text-orange-700 hover:bg-orange-50 border border-orange-200 hover:border-orange-300'
-                    : 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-200 hover:border-gray-300'
-                }`}
+                className={statusPillClass(status, statusFilter === status)}
               >
-                {status === 'AGED' ? 'Aged' : status}
+                {statusPillLabel(status)}
               </button>
             ))}
           </div>
@@ -414,6 +435,12 @@ export default function AllProductsPage(): JSX.Element {
                     className="btn-secondary text-sm px-4 py-2"
                   >
                     Mark Sold
+                  </button>
+                  <button
+                    onClick={() => handleBulkStatusUpdate('BLOCKED')}
+                    className="btn-secondary text-sm px-4 py-2 border-rose-200 text-rose-900 hover:bg-rose-50 hover:border-rose-300"
+                  >
+                    Mark Blocked
                   </button>
                   <button
                     onClick={handleExportSelected}
@@ -606,7 +633,7 @@ export default function AllProductsPage(): JSX.Element {
                             <select
                               value={product.status}
                               onChange={(e) =>
-                                updateStatus(product.id, e.target.value as any)
+                                updateStatus(product.id, e.target.value as ProductStatus)
                               }
                               className={`px-3 py-2 rounded-lg text-xs font-bold border-0 cursor-pointer transition-all duration-200 uppercase tracking-wide ${
                                 aged
@@ -615,12 +642,15 @@ export default function AllProductsPage(): JSX.Element {
                                   ? 'bg-green-100 text-green-700 hover:bg-green-200'
                                   : product.status === 'SOLD'
                                   ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                                  : product.status === 'BLOCKED'
+                                  ? 'bg-rose-100 text-rose-800 hover:bg-rose-200'
                                   : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                               }`}
                             >
                               <option value="INACTIVE">INACTIVE</option>
                               <option value="POSTED">POSTED</option>
                               <option value="SOLD">SOLD</option>
+                              <option value="BLOCKED">BLOCKED</option>
                             </select>
                             {product.status === 'POSTED' && daysSincePosted !== null && (
                               <span className={`text-xs font-medium ${

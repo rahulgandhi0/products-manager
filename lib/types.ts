@@ -1,3 +1,5 @@
+export type ProductStatus = 'INACTIVE' | 'POSTED' | 'SOLD' | 'BLOCKED';
+
 export interface Product {
   id: string;
   asin: string;
@@ -18,7 +20,7 @@ export interface Product {
   dimension_unit?: string;
   condition_id: string;
   format: string;
-  status: 'INACTIVE' | 'POSTED' | 'SOLD';
+  status: ProductStatus;
   raw_amazon_data?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -57,5 +59,5 @@ export interface AmazonProduct {
   };
 }
 
-export type StatusFilter = 'ALL' | 'INACTIVE' | 'POSTED' | 'SOLD' | 'AGED';
+export type StatusFilter = 'ALL' | ProductStatus | 'AGED';
 

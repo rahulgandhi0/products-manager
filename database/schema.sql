@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS products (
   dimension_unit TEXT,
   condition_id TEXT DEFAULT 'NEW',
   format TEXT DEFAULT 'FixedPrice',
-  status TEXT NOT NULL DEFAULT 'INACTIVE' CHECK (status IN ('INACTIVE', 'POSTED', 'SOLD')),
+  status TEXT NOT NULL DEFAULT 'INACTIVE' CHECK (status IN ('INACTIVE', 'POSTED', 'SOLD', 'BLOCKED')),
   raw_amazon_data JSONB,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
